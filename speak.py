@@ -10,7 +10,7 @@ import time
 import soundfile as sf
 from kokoro_onnx import Kokoro
 
-TEXT = "Headstart streams the first audio chunk before the rest of the clip is generated."
+TEXT = "Headstart streams the first audio chunk before the rest of the clip is generated. It is a way to reduce latency and make the model feel more responsive. The first chunk is generated in parallel with the rest of the clip, so it can be played back immediately while the rest of the audio is still being generated."
 VOICE = "af_sarah"
 
 t0 = time.perf_counter()

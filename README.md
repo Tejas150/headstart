@@ -205,7 +205,55 @@ client A   time to first audio  1712 ms
 client B   time to first audio  3421 ms      ← waited one full generation
 ```
 
-A latency number that doesn't separate queue time from model time isn't a latency number. This is the measured motivation for M2's scheduler, rather than an assertion that one is needed.
+A latency number that doesn't separate queue time from model time isn't a latency number. Finding 10 takes this to percentiles.
+
+### 9. Chunking bottoms out at the architecture, not at the scheduler
+
+If a 5-word first chunk beats a whole sentence, why not go all the way and stream one word at a time? **What I tested:** the same paragraph cut into chunks of 1, 5 and 21 words (`granularity.py`).
+
+| words per chunk | time per chunk | audio per chunk | total audio produced |
+|---|---|---|---|
+| 1 | 388 ms | 0.67 s | **18.26 s** |
+| 5 | 706 ms | 1.58 s | 9.43 s |
+| 21 | 1486 ms | 4.16 s | 8.32 s |
+
+**What I found: generation keeps up fine — the audio is what breaks.** Even one word at a time, generation runs at 0.58× realtime, so the buffer never drains. But a word synthesised on its own is spoken in isolation, with its own pause before and after. The same sentence is 4.31 s in one call and **9.49 s word-by-word**. `"the"` alone renders as 0.73 s, half of it silence, against roughly 0.1 s inside a phrase. Twenty-eight of those is a word list, not a sentence — and 3.6× the compute, since every chunk re-pays the fixed cost from finding 2.
+
+**Why it can't be fixed by cutting smaller still:** the model takes text in and hands finished audio back, and nothing else.
+
+```
+IN   tokens [1, sequence_length]   style [1, 256]   speed [1]
+OUT  audio  [audio_length]
+     state tensors in the signature: none
+```
+
+To generate audio incrementally, a model has to hand back its internal state so the next call can resume where the last one stopped. There's nowhere in this signature to put that — no way to ask for "the next 40 ms". It also plans the whole utterance up front (durations are predicted across the full text, and one `STFT` spans the whole signal), so the complete input has to exist before the first sample can.
+
+So the ~300 ms floor is **one full pass of a model that only knows how to run start-to-finish.** Systems that emit audio every few tens of milliseconds are running a loop and tapping it each step — a state-space model carries a small running state precisely so that loop exists. That's a property of the model, not of the server, and no scheduler, batcher or transport changes it.
+
+### 10. How many people can it serve at once? Three.
+
+Every number above was measured with one client on an idle laptop. **What I tested:** 1, 2, 3, 4 and 8 clients all asking for the same paragraph at the same time, each firing its next request as soon as the last finished (`bench.py`, 6 requests per client).
+
+| clients | TTFB p50 | p95 | time spent queueing | spare audio in buffer | requests that stalled |
+|---|---|---|---|---|---|
+| 1 | 707 ms | 735 ms | 0% | +1.90 s | 0 / 6 |
+| 2 | 1504 ms | 3196 ms | 50% | +1.90 s | 0 / 12 |
+| 3 | 3774 ms | 5481 ms | 67% | +1.85 s | 0 / 18 |
+| 4 | 4555 ms | 7923 ms | 75% | **−1.03 s** | 6 / 24 |
+| 8 | 10720 ms | 17404 ms | 88% | **−19.51 s** | 48 / 48 |
+
+**What I found:**
+
+**1. It's all queueing, not slower generation.** Model time per request never moved — 5163, 5303, 5200, 5228, 5222 ms — while waiting grew from 0% to 88% of a request's life. The server isn't degrading under load; requests are just standing in line.
+
+**2. The percentile lies. The buffer doesn't.** `lead` is spare audio in hand: how far ahead of the listener we are. While it's positive, playback is smooth. It goes negative at 4 clients, and at 8 *every* request stalls mid-sentence. At 4 clients p95 reads 7.9 s — bad, but it doesn't look fatal, and by then a quarter of listeners are hearing a hole. **For streaming audio the SLO belongs on buffer margin, not on TTFB percentiles.**
+
+**3. Capacity is 3.3 streams, confirmed two ways.** Generation takes 0.304 s per second of audio, so one machine can feed 1 / 0.304 ≈ 3.3 listeners in real time. Measured throughput does flatten at 3.27 seconds of audio per second, and the first stall appears between 3 clients and 4. Arithmetic and behaviour agree.
+
+**4. That ceiling is already hit by one client.** Extra clients buy queue, not audio. So no scheduler or queue policy raises it — only generating more audio per forward pass would, and per finding 7 this graph's batch dimension is a literal 1. That bounds what M2 can honestly claim before it's built.
+
+Levels run one after another, so the first one sets the baseline everything else is compared against. `bench.py` re-runs that level again at the end and prints the drift; more than 15% apart and it reports the run as void, because a benchmark measured across a changing machine is describing the machine.
 
 ---
 
@@ -236,13 +284,13 @@ Metadata as JSON, audio as a separate binary frame — **not** base64 inside the
 |---|---|---|
 | **M0** | Scaffold + model speaks | ✅ done |
 | **M1** | Streaming — chunking policy, then latency floor, then WebSocket | ✅ done |
-| **M2** | Scheduler + benchmark harness (p50/p95/p99) | ← current |
+| **M2** | Scheduler + benchmark harness (p50/p95/p99) | harness ✅ — scheduler ← current |
 | M3 | Docker + kind + HPA + Prometheus/Grafana | |
 | M4 | Go gateway + Piper backend comparison | |
 
 **M1 was deliberately ordered chunking → latency → transport.** The obvious order is to build the WebSocket first, but transport moves TTFB by single-digit milliseconds on localhost (measured: 33 ms of 6.4 s). Building it first would have meant re-running every benchmark after the real optimisation landed.
 
-**M2 was re-scoped after finding 7.** It was "dynamic batcher + benchmarks". The batcher half is impossible without graph surgery, so it becomes a scheduler — admission control, queue policy, and the p50/p95/p99 harness that finding 8 already motivates.
+**M2 was re-scoped after finding 7.** It was "dynamic batcher + benchmarks". The batcher half is impossible without graph surgery, so it becomes a scheduler — admission control and queue policy — plus the harness. The harness ran first on purpose: a scheduler is worth building only if the queue owns the tail, and finding 10 shows it owns 88% of it, with a hard capacity line at 3.3 streams that no queue policy can move. That bounds what the scheduler can honestly claim before a line of it is written.
 
 ---
 
@@ -251,6 +299,8 @@ Metadata as JSON, audio as a separate binary frame — **not** base64 inside the
 Cartesia's Sonic-3 advertises **40–90 ms** time-to-first-audio; independent measurements land nearer **166–190 ms**. That is served GPU infrastructure, and this is one laptop CPU.
 
 The claim here is not "I matched that." It's: *here is the floor on this machine, here is what it decomposes into operator by operator, here is what each lever bought, and here is the model that predicts what different hardware would do.* Being several times off a frontier system with a full account of where the time goes is more useful than a fast number with no decomposition.
+
+And per finding 9, most of the remaining gap isn't a serving gap at all. A one-shot graph's floor is a full forward pass; an incremental model's is one step of a loop. Knowing which of those you're holding decides whether the next win comes from engineering or from a different model.
 
 ---
 
@@ -270,6 +320,8 @@ The claim here is not "I matched that." It's: *here is the floor on this machine
 | `overhead.py` | Finding 8 — cost of the thread hop |
 | `leadsweep.py` | Finding 6 — the first-chunk sweep that chose `lead_words=5` |
 | `headline.py` | The table at the top — all three rows, one run, one methodology |
+| `granularity.py` | Finding 9 — chunk-size sweep, citation-form cost, and the graph signature |
+| `bench.py` | Finding 10 — TTFB percentiles, queue share and saturation under concurrency |
 | `server.py` / `client.py` | The server, and findings 6 and 8 |
 
 Every number in this README came from one of these on the machine described at the top. Re-running them is the point.

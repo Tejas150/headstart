@@ -1,0 +1,35 @@
+# headstart — pinned to what the README's numbers were measured on.
+#
+# Versions are exact, not floors. Every latency figure in the README is a
+# property of a specific runtime build as much as of this machine: onnxruntime
+# ships different kernels between releases, and block 2 found kernel quality to
+# be ~16% of the floor. An unpinned onnxruntime would silently invalidate the
+# benchmarks.
+#
+#     python -m venv .venv && .venv/bin/pip install -r requirements.txt
+#
+# Python 3.10 on Ubuntu. Note: python3.10-venv may not be installed and sudo
+# may not be available — `pip3 install --user virtualenv` then
+# `virtualenv .venv` is the fallback that works.
+#
+# Not installable via pip, needed by client.py for playback:
+#     aplay  (alsa-utils)  — usually already present on Linux
+
+# --- model runtime -----------------------------------------------------
+kokoro-onnx==0.6.1
+onnxruntime==1.23.2
+numpy==2.2.6
+
+# --- server + streaming transport --------------------------------------
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+websockets==16.1.1
+
+# --- audio i/o ---------------------------------------------------------
+soundfile==0.14.0
+
+# --- benchmarks only ---------------------------------------------------
+# Pulled in by onnxruntime.quantization, which quant.py imports. Not needed
+# to run the server; kept here so the benchmark scripts work from a clean
+# install rather than failing on a missing transitive import.
+onnx==1.22.0

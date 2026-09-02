@@ -10,17 +10,19 @@ Built to answer one question with real numbers: *how fast can you serve a neural
 
 ## The number
 
-Three-sentence paragraph, 16.6 s of audio, measured end-to-end from the client:
+Three-sentence paragraph, 17.2 s of audio, measured end-to-end from the client:
 
-| | time to first audio | how |
-|---|---|---|
-| baseline — no streaming | **7023 ms** | one `create()` call, nothing emitted until done |
-| sentence chunking | **1757 ms** | our own splitter; the library's doesn't help (finding 1) |
-| + clause-split first chunk | **917 ms** | cut the segment the listener is waiting on (finding 6) |
+| | time to first audio | spread | how |
+|---|---|---|---|
+| baseline — no streaming | **5380 ms** | 5298–5994 | one `create()` call, nothing emitted until done |
+| sentence chunking | **1594 ms** | 1534–1622 | our own splitter; the library's doesn't help (finding 1) |
+| + clause-split first chunk | **840 ms** | 828–854 | cut the segment the listener is waiting on (finding 6) |
 
-**7.7× sooner to first sound**, same 16.6 s of audio, and the buffer never runs dry — `lead` (audio in hand minus audio already played) stays positive at every chunk, so there is no gap.
+**6.4× sooner to first sound**, for the same 17.2 s of audio, and the buffer never runs dry — `lead` (audio in hand minus audio already played) stays positive at every chunk, so there is no gap. Total time paid for it: 5999 ms vs 5380 ms, **1.12×**.
 
-> These are **single-shot end-to-end numbers, not best-of-N.** Run-to-run spread is roughly ±100 ms. A latency README that quotes best-of-5 is measuring the machine on its luckiest day; the listener doesn't get that day.
+> **Median of 3, with the full spread shown, and all three rows measured in one run** by `headline.py`. Not best-of-N: best-of measures the machine on its luckiest day, which isn't the day the listener gets. A median without a spread would hide the tail — and the tail is exactly what chose the default in finding 6.
+>
+> All three rows come from one script and one machine state on purpose. A speedup table whose rows were gathered under different conditions isn't a speedup table; it's three unrelated numbers in a column. `headline.py` also asserts that every row describes the same length of audio, so the comparison can't quietly become "a shorter clip" instead of "a faster one."
 
 Transport is not where the time goes: **connect + WebSocket + framing is 33 ms of a 6.4 s run.** That is why the transport was built *last* — see the ordering note under Status.
 
@@ -85,7 +87,7 @@ Framework overhead — Python, the ONNX dispatcher, everything that isn't math �
 
 8 threads beats the default and beats 16. 8 is the physical core count; two SMT threads on one core share a load/store path, so the second one contends rather than helps.
 
-The first version of this measurement was **confounded** — the tuned runs set `intra_op` *and* `inter_op`, the default set neither, so "1.34×" couldn't be attributed. Isolating them:
+Setting `intra_op` and `inter_op` together and comparing against a run that sets neither gives a number — "1.34×" — that **cannot be attributed to either knob**. `isolate.py` varies them one at a time:
 
 | config | short chunk | full sentence |
 |---|---|---|
@@ -149,13 +151,32 @@ TTFB(target) ≈ 261ms × (FLOPS_here / FLOPS_there)     ← Conv, saturating co
 
 **Anyone quoting "2× the hardware → 2× the speed" is wrong, and this says precisely where.** 16% of the time doesn't move at all. Plugging in a modern server CPU predicts **~1.6×** — a short chunk near 370 ms. That's a falsifiable prediction, and validating it on a cloud instance is the next experiment.
 
-> Two bugs in my own measurement, both caught by noticing an impossible number rather than by a crash. The bandwidth probe counted 5 memory passes where the standard formula counts 3, understating bandwidth by 1.67× — and *every* scaling claim divides by that number. And `Conv` reported 459 GFLOP/s against a 349 GFLOP/s "peak", which can't happen, so the baseline was weak rather than the reading wrong.
+> Both machine ceilings are sanity-checked against the readings that depend on them, because neither fails loudly. The bandwidth probe has to count 3 memory passes, not the 5 a naive read of the loop suggests — a 1.67× error there propagates into *every* scaling claim. And a measured `Conv` rate above the "peak" is arithmetically impossible, so it indicts the peak: the original baseline was simply too weak to be a ceiling.
 
 ### 6. Where the first cut goes *is* the latency policy
 
-Block 2 said the floor is ~300 ms, so a 1757 ms first chunk is nowhere near it — because a long first sentence is a long forward pass. Cutting the first segment at a clause boundary takes it to **917 ms** for the same total audio.
+Block 2 said the floor is ~300 ms, so a 1594 ms first chunk is nowhere near it — because a long first sentence is a long forward pass. Cutting the first segment at a clause boundary takes it to **840 ms** for the same total audio.
 
-It isn't free. The two renderings correlate at only **+0.71** and diverge 40 ms in, so prosody changes across the whole clip, not just at the seam. It's a **flag, not a default** — a tradeoff to listen to, not a fact to assume.
+How small should that first chunk be? Smaller fails in two directions: total time rises (every chunk pays the ~300 ms fixed cost again), and the buffer can run dry — a tiny first chunk starts playback almost immediately and then has to be fed faster than the model generates. `lead` going negative is the one failure that actually breaks a streaming product. So it was swept (`leadsweep.py`, median of 3):
+
+| `lead_words` | TTFB median | spread | min lead |
+|---|---|---|---|
+| off | 1624 ms | 1551–2064 | +4.31 s |
+| 8 | 1116 ms | 1066–1155 | +2.73 s |
+| 6 | 1013 ms | 981–1015 | +2.20 s |
+| **5** | **876 ms** | **786–901** | **+1.90 s** |
+| 4 | 710 ms | 683–**2185** | +1.54 s |
+| 3 | 625 ms | 614–**2586** | +0.52 s |
+
+**The default is 5, chosen on the tail rather than the median.** Below 5 the median keeps falling, but the spread explodes — 4 and 3 each threw a 2 s+ outlier in three runs, where 8/6/5 threw none. 876 ms with a 115 ms spread beats 625 ms with a 2 s tail, because a serving SLO is written against p99, not p50. TTFB across the sweep also tracks block 2's `300 + 374 × audio_s` fit, so the curve is predictable rather than lucky.
+
+It isn't free. The two renderings correlate at only **+0.71** and diverge 40 ms in, so prosody changes across the whole clip, not just at the seam. Sending `lead_words: 0` turns it off.
+
+**And chunking has a cost that no latency table shows.** The model renders a pause between sentences only when it can see the boundary — generate each sentence separately and the pause silently disappears. Measured: the paragraph in one call is 17.152 s, its three sentences summed are 16.597 s. **555 ms over 2 boundaries, 277 ms each.** Not trimmed edge silence; leading/trailing silence is ~30–90 ms per chunk either way.
+
+So the pause is re-inserted as silence at sentence boundaries — and *not* at a clause split inside a sentence, where there was never a pause to restore. It costs zero model time, and since it's audio handed over for free it **raises** `lead` instead of spending it: the prosody is restored and the buffer margin improves at the same time.
+
+This is invisible to every latency metric in the table, which is why `headline.py` asserts on audio length as well as time. A chunking policy that ships sooner by quietly emitting less audio would otherwise look like a win.
 
 ### 7. This graph cannot batch
 
@@ -198,6 +219,7 @@ A latency number that doesn't separate queue time from model time isn't a latenc
                     │  ├─ asyncio.Semaphore(1)  ← one model call at a time; queue is measured
                     │  └─ asyncio.to_thread     ← keeps the event loop alive
                     │
+                    │  + 277 ms silence at sentence boundaries  ← free audio, restores the pause
                     │  per chunk: JSON metadata frame, then raw int16 PCM frame
   client ◀──────────┘  playback starts on chunk 0, while chunk 1 is still generating
 ```
@@ -246,6 +268,8 @@ The claim here is not "I matched that." It's: *here is the floor on this machine
 | `roofline.py` | Finding 5 — machine ceilings and per-operator placement |
 | `kernels.py` | Finding 5 — numpy head-to-head proving the kernel loss |
 | `overhead.py` | Finding 8 — cost of the thread hop |
+| `leadsweep.py` | Finding 6 — the first-chunk sweep that chose `lead_words=5` |
+| `headline.py` | The table at the top — all three rows, one run, one methodology |
 | `server.py` / `client.py` | The server, and findings 6 and 8 |
 
 Every number in this README came from one of these on the machine described at the top. Re-running them is the point.

@@ -41,10 +41,16 @@ THE THREE DESIGN DECISIONS THAT MATTER HERE
 CHUNKING
     Block 1 established sentence boundaries as the cut points. But a lone
     sentence has no interior boundary, so its first chunk is the whole clip
-    and TTFB collapses back to non-streaming. --split-first cuts the first
+    and TTFB collapses back to non-streaming. lead_words cuts the first
     segment at a comma or conjunction to get sound out sooner, at some cost
-    to prosody. It is a flag, not a default, because it is a tradeoff to
-    measure rather than a fact to assume.
+    to prosody. The default of 5 was swept, not guessed (leadsweep.py).
+
+    Chunking also has a cost that is invisible in the latency table: the model
+    renders a pause between sentences only when it can see the boundary, so
+    generating each sentence separately silently deletes it. Measured at 277 ms
+    per boundary. The pause is re-inserted as silence, which restores the
+    prosody at zero model cost and improves the buffer margin rather than
+    spending it. See SENTENCE_GAP_S.
 """
 
 from __future__ import annotations
@@ -71,6 +77,30 @@ SAMPLE_RATE = 24000
 # SMT threads on one core share a load/store path. Reported as one setting.
 INTRA_OP_THREADS = 8
 INTER_OP_THREADS = 1
+
+# Swept in leadsweep.py (median of 3, not best-of). TTFB falls monotonically as
+# the first chunk shrinks -- and tracks block 2's `300 + 374 x audio_s` fit, so
+# it is predictable rather than lucky. Below 5 words the median keeps improving
+# but the spread explodes: 4 and 3 each threw a 2 s+ outlier in three runs,
+# where 8/6/5 threw none. 876 ms with a 115 ms spread beats 625 ms with a 2 s
+# tail, because the tail is what a serving SLO is written against.
+# Set lead_words: 0 in a request to disable and cut on sentences only.
+DEFAULT_LEAD_WORDS = 5
+
+# Measured, not chosen. Rendering the paragraph in one call gives 17.152 s of
+# audio; rendering its three sentences separately and summing gives 16.597 s.
+# The 555 ms gap is not trimmed edge silence -- leading/trailing silence is
+# ~30-90 ms per chunk either way. It is the inter-sentence pause the model
+# renders when it can see the sentence boundary, and which chunking destroys,
+# because each chunk is generated in isolation and does not know a sentence
+# just ended. 555 ms over 2 interior boundaries = 277 ms each.
+#
+# So the pause is put back on the wire as silence. It costs zero model time,
+# and because it is audio handed over for free it *raises* lead rather than
+# spending it -- the buffer margin improves while the prosody is restored.
+# A clause split inside a sentence gets no gap: there is no pause there to
+# restore, and inserting one would be audibly wrong.
+SENTENCE_GAP_S = 0.277
 
 # Only one model call runs at a time; see design note 2 above.
 MODEL_SLOT = asyncio.Semaphore(1)
@@ -105,11 +135,30 @@ def split_lead(segment: str, max_words: int) -> list[str]:
     return [" ".join(words[:max_words]), " ".join(words[max_words:])]
 
 
-def chunk_text(text: str, lead_words: int | None = None) -> list[str]:
+def chunk_text(text: str, lead_words: int | None = None) -> list[tuple[str, float]]:
+    """Split into chunks, each paired with the silence to append after it.
+
+    The gap distinguishes the two kinds of cut. A sentence boundary had a pause
+    in the un-chunked render (see SENTENCE_GAP_S) and gets it back; a clause
+    split inside a sentence did not, and gets nothing. The final chunk gets no
+    trailing gap -- the clip is over, and padding the end just delays the close.
+    """
     parts = sentences(text)
-    if lead_words and parts:
-        parts = split_lead(parts[0], lead_words) + parts[1:]
-    return parts
+    if not parts:
+        return []
+    # Every element is followed by a real sentence boundary except the last.
+    chunks = [(p, SENTENCE_GAP_S) for p in parts[:-1]] + [(parts[-1], 0.0)]
+    if lead_words:
+        head, *rest = split_lead(chunks[0][0], lead_words)
+        if rest:
+            # The lead split is interior to sentence 0, so the head gets no gap
+            # and the tail inherits whatever followed the original sentence.
+            chunks = [(head, 0.0), (rest[0], chunks[0][1])] + chunks[1:]
+    return chunks
+
+
+def silence(seconds: float) -> bytes:
+    return b"\x00\x00" * int(seconds * SAMPLE_RATE)
 
 
 # ------------------------------------------------------------------ model
@@ -180,7 +229,10 @@ async def tts(ws: WebSocket) -> None:
             text = request["text"]
             voice = request.get("voice", "af_sarah")
             speed = float(request.get("speed", 1.0))
+            # absent OR null -> server default; 0 -> explicitly off
             lead_words = request.get("lead_words")
+            if lead_words is None:
+                lead_words = DEFAULT_LEAD_WORDS
 
             chunks = chunk_text(text, lead_words)
             await ws.send_text(json.dumps({
@@ -193,14 +245,16 @@ async def tts(ws: WebSocket) -> None:
             ttfb_ms = None
             audio_s = 0.0
             gen_total = 0.0
-            for i, chunk in enumerate(chunks):
+            for i, (chunk, gap_s) in enumerate(chunks):
                 samples, queue_ms, gen_ms = await synth(chunk, voice, speed)
                 pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2").tobytes()
+                # Restored inter-sentence pause. Free audio: no model time.
+                pcm += silence(gap_s)
 
                 elapsed = (time.perf_counter() - t0) * 1000
                 if ttfb_ms is None:
                     ttfb_ms = elapsed
-                audio_s += len(samples) / SAMPLE_RATE
+                audio_s += len(samples) / SAMPLE_RATE + gap_s
                 gen_total += gen_ms
 
                 # `lead` is the point of the whole project: seconds of audio
@@ -211,7 +265,8 @@ async def tts(ws: WebSocket) -> None:
                     "index": i,
                     "text": chunk,
                     "bytes": len(pcm),
-                    "audio_s": round(len(samples) / SAMPLE_RATE, 3),
+                    "audio_s": round(len(samples) / SAMPLE_RATE + gap_s, 3),
+                    "gap_s": gap_s,
                     "queue_ms": round(queue_ms, 1),
                     "gen_ms": round(gen_ms, 1),
                     "elapsed_ms": round(elapsed, 1),

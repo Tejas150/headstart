@@ -66,7 +66,10 @@ async def run(url: str, text: str, lead_words: int | None,
               play: bool, out: str | None) -> None:
     print(f"\n{'=' * 74}")
     print(f"{text[:68]}{'...' if len(text) > 68 else ''}")
-    print(f"lead_words={lead_words or 'off (sentence boundaries only)'}\n")
+    label = ("server default" if lead_words is None
+             else "off (sentence boundaries only)" if lead_words == 0
+             else lead_words)
+    print(f"lead_words={label}\n")
 
     t0 = time.perf_counter()
     async with websockets.connect(url, max_size=None) as ws:
@@ -134,10 +137,11 @@ async def main() -> None:
     parser.add_argument("--paragraph", action="store_true",
                         help="use the three-sentence paragraph")
     parser.add_argument("--lead-words", type=int, default=None,
-                        help="split the first segment at a clause boundary "
-                             "under N words, to get sound out sooner")
+                        help="split the first segment at a clause boundary under "
+                             "N words. 0 disables. Omit to use the server default.")
     parser.add_argument("--compare", action="store_true",
-                        help="run with and without the lead split, back to back")
+                        help="run with the lead split off, then at the server "
+                             "default, back to back")
     parser.add_argument("--no-play", action="store_true")
     parser.add_argument("--out", default=None)
     args = parser.parse_args()
@@ -145,7 +149,7 @@ async def main() -> None:
     text = args.text or (PARAGRAPH if args.paragraph else M0_SENTENCE)
 
     if args.compare:
-        for lead in (None, 6):
+        for lead in (0, None):
             await run(args.url, text, lead, not args.no_play, None)
         print("\n  Same audio, same model, same machine. The only difference is "
               "where\n  the first cut is made — which is the entire chunking policy.")

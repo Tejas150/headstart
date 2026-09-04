@@ -46,6 +46,13 @@ curl -L -o models/voices-v1.0.bin  "$B/voices-v1.0.bin"
 
 `--compare` runs the same text twice, with and without the clause split, and plays both. Playback pipes raw PCM into `aplay`, so there's no audio library to install and nothing to configure. Add `--no-play` to measure only.
 
+To reproduce findings 11 and 12 — the load sweep with the door on, then off:
+
+```bash
+.venv/bin/python bench.py --levels 1,2,3,4,8 --requests 6   # door on (default: 3 streams)
+.venv/bin/python server.py --max-inflight 0 &               # door off, then re-run bench.py
+```
+
 Model weights are gitignored (311 MB) — pull them with the commands above.
 
 ---
@@ -255,6 +262,54 @@ Every number above was measured with one client on an idle laptop. **What I test
 
 Levels run one after another, so the first one sets the baseline everything else is compared against. `bench.py` re-runs that level again at the end and prints the drift; more than 15% apart and it reports the run as void, because a benchmark measured across a changing machine is describing the machine.
 
+### 11. Saying no is the feature. Every stall goes away.
+
+Finding 10 says capacity is about 3 streams and the 4th listener doesn't get slower audio, they get a hole in the middle of a sentence. So the server now refuses work it can't finish: past 3 streams in flight a request waits up to 5.2 s for a slot and is then turned away, **before any audio has been sent**.
+
+**What I tested:** the same sweep as finding 10, run twice back to back — once with the door switched off (`--max-inflight 0`) and once on. Same binary both times, one flag apart, so the arms can't differ by a code change.
+
+| clients | | TTFB p50 | p95 | spare audio in buffer | requests that stalled | turned away |
+|---|---|---|---|---|---|---|
+| 4 | off | 4573 ms | 8014 ms | **−1.38 s** | **6 / 24** | 0 |
+| 4 | on | 6151 ms | 6361 ms | +1.90 s | **0 / 18** | 6 / 24 |
+| 8 | off | 10707 ms | 17828 ms | **−21.54 s** | **48 / 48** | 0 |
+| 8 | on | 6102 ms | 7457 ms | +1.90 s | **0 / 16** | 32 / 48 |
+
+**What I found:**
+
+**1. Nobody hears a stall any more.** Stalls went from 6 of 24 and 48 of 48 to zero at both levels. Spare audio in the buffer holds at +1.90 s under 8 clients — the same margin a single client gets. **Whoever gets served now gets the single-client experience, and everyone else is told up front instead of finding out mid-sentence.**
+
+**2. The 4th client's median got worse on purpose.** At 4 clients, p50 rose 4573 → 6151 ms, because an admitted client now waits at the door before its first byte. That is the trade being bought: a longer wait is legible to a listener as loading, a hole in a sentence is not — they can't tell server load from a broken product, so they conclude the product is broken.
+
+**3. Past capacity it got better on every measure at once.** At 8 clients p50 fell 10707 → 6102 ms and p95 fell 17828 → 7457 ms. Nothing was optimised; the queue simply stopped being allowed to grow. **The unbounded queue was worse for the people standing in it than being turned away would have been.**
+
+**4. It costs no throughput.** Peak 3.23 vs 3.27 seconds of audio per second, and 3.20 vs 3.27 at 8 clients — unchanged within run-to-run noise. The door reallocates who waits; it does not create or destroy capacity, and per finding 10 nothing at this layer could.
+
+**5. The share served tracks capacity, and the shortfall is the price of backing off.** At 4 clients, 18 of 24 got through — exactly 3/4, the capacity share. At 8 clients it's 16 of 48, or 1/3, a little under the 3/8 the arithmetic predicts. The reason shows up in the door wait: admitted clients wait 2341 ms at 4 clients but only 616 ms at 8. Past a point, refused clients are all off backing off at the same time, so a freed slot sometimes has nobody standing at it. **Politeness costs a few percent of capacity** — worth knowing before tuning the retry hint, which is the knob that trades it against refusal churn.
+
+Both runs pass the drift check (1.01× and 1.00×), so this is a comparison of two servers, not a story about the machine getting busier between them.
+
+### 12. First-come-first-served starved two clients out of eight
+
+The door began as plain first-come-first-served, which sounds like the fair answer. **What I tested:** instead of only counting how many requests got served, `bench.py` now counts them **per client** — because a served total reads identically whether the server rotates fairly or serves the same three people every time. The first-come-first-served run put 18 of 48 through at 8 clients; the total said nothing about who they went to.
+
+| 8 clients, 6 requests each | requests served, per client | served in total | got nothing |
+|---|---|---|---|
+| first-come-first-served | 4, 4, 4, 3, 2, 1, **0, 0** | 18 of 48 | **2 of 8** |
+| refusals move you up the queue | 4, 3, 2, 2, 2, 1, 1, 1 | 16 of 48 | 0 of 8 |
+
+The two rows are separate runs, so the totals differ a little — 18 and 16 — which is exactly the point: the number that changed by two says nothing, and the number that changed from two-starved to none is the whole finding. The aged row reproduced exactly in the published run of finding 11: same split, same spread, nobody starved.
+
+**What I found:**
+
+**1. Being refused made the next refusal more likely.** A refused client backs off before retrying, and while it's backing off it isn't in the queue at all — so it comes back *behind* the clients that were just served, who re-join the instant they finish. Two clients were turned away all six times. **Backing off politely costs you your place, and first-come-first-served has no memory of that.**
+
+**2. The totals hid it completely.** Served counts, latency percentiles, stall counts and throughput were all fine in both versions. Only the per-client breakdown showed two people getting nothing, which is why the check is now part of the harness and not something I looked at once.
+
+**3. The fix is to let the door remember.** Each refusal now raises that caller's priority; a freed slot goes to whoever has been refused most, with arrival order breaking ties, and a successful admission resets them to zero. Everyone gets served at least once, and the gap between best- and worst-served client narrows from 4 to 3.
+
+This is the point of writing the queue out by hand rather than using a semaphore. A semaphore *is* a scheduling policy — first-come-first-served, wait forever, no visibility — it just doesn't look like one, so the policy never gets chosen, measured, or found to be wrong.
+
 ---
 
 ## Architecture
@@ -264,6 +319,12 @@ Levels run one after another, so the first one sets the baseline everything else
 ```
   client ──WS──▶  FastAPI /tts
                     │  split text into chunks (sentence, or clause for the first)
+                    │
+                    │  ┌── the door ── max 3 streams, held for the whole request
+                    │  │   full? wait up to 5.2 s, then refuse with a retry hint
+                    │  │   order: most-refused first, then longest-waiting
+                    │  └── refused ──▶ {"type":"busy"}, no audio sent
+                    │
                     │  ├─ asyncio.Semaphore(1)  ← one model call at a time; queue is measured
                     │  └─ asyncio.to_thread     ← keeps the event loop alive
                     │
@@ -272,9 +333,11 @@ Levels run one after another, so the first one sets the baseline everything else
   client ◀──────────┘  playback starts on chunk 0, while chunk 1 is still generating
 ```
 
+Two gates, doing different jobs. The **door** decides *whether* you get served, and holds its slot for the whole request — releasing it between chunks would let a new stream in to compete with one already mid-sentence, which is the thing it exists to prevent. The **model slot** decides *when* each individual chunk runs. The door bounds the queue; the slot serialises what's in it.
+
 Metadata as JSON, audio as a separate binary frame — **not** base64 inside the JSON, which is +33% on the one payload where bytes are latency, and int16 rather than float32, which halves it again.
 
-**Still to come:** scheduler with admission control, result cache, Prometheus `/metrics`, `TTSBackend` interface with Piper behind it, Docker + kind + HPA, Go gateway.
+**Still to come:** result cache, Prometheus `/metrics`, `TTSBackend` interface with Piper behind it, Docker + kind + HPA, Go gateway.
 
 ---
 
@@ -284,13 +347,13 @@ Metadata as JSON, audio as a separate binary frame — **not** base64 inside the
 |---|---|---|
 | **M0** | Scaffold + model speaks | ✅ done |
 | **M1** | Streaming — chunking policy, then latency floor, then WebSocket | ✅ done |
-| **M2** | Scheduler + benchmark harness (p50/p95/p99) | harness ✅ — scheduler ← current |
+| **M2** | Scheduler + benchmark harness (p50/p95/p99) | ✅ done — harness, admission control, queue policy |
 | M3 | Docker + kind + HPA + Prometheus/Grafana | |
 | M4 | Go gateway + Piper backend comparison | |
 
 **M1 was deliberately ordered chunking → latency → transport.** The obvious order is to build the WebSocket first, but transport moves TTFB by single-digit milliseconds on localhost (measured: 33 ms of 6.4 s). Building it first would have meant re-running every benchmark after the real optimisation landed.
 
-**M2 was re-scoped after finding 7.** It was "dynamic batcher + benchmarks". The batcher half is impossible without graph surgery, so it becomes a scheduler — admission control and queue policy — plus the harness. The harness ran first on purpose: a scheduler is worth building only if the queue owns the tail, and finding 10 shows it owns 88% of it, with a hard capacity line at 3.3 streams that no queue policy can move. That bounds what the scheduler can honestly claim before a line of it is written.
+**M2 was re-scoped after finding 7.** It was "dynamic batcher + benchmarks". The batcher half is impossible without graph surgery, so it becomes a scheduler — admission control and queue policy — plus the harness. The harness ran first on purpose: a scheduler is worth building only if the queue owns the tail, and finding 10 shows it owns 88% of it, with a hard capacity line at 3.3 streams that no queue policy can move. That bounded what the scheduler could honestly claim before a line of it was written — and findings 11 and 12 claim exactly that and no more: every stall removed, fair rotation, and not one extra second of audio per second.
 
 ---
 
@@ -321,8 +384,8 @@ And per finding 9, most of the remaining gap isn't a serving gap at all. A one-s
 | `leadsweep.py` | Finding 6 — the first-chunk sweep that chose `lead_words=5` |
 | `headline.py` | The table at the top — all three rows, one run, one methodology |
 | `granularity.py` | Finding 9 — chunk-size sweep, citation-form cost, and the graph signature |
-| `bench.py` | Finding 10 — TTFB percentiles, queue share and saturation under concurrency |
-| `server.py` / `client.py` | The server, and findings 6 and 8 |
+| `bench.py` | Findings 10, 11, 12 — percentiles and saturation, the door on/off comparison, the per-client fairness check |
+| `server.py` / `client.py` | The server and the door, and findings 6, 8, 11, 12 |
 
 Every number in this README came from one of these on the machine described at the top. Re-running them is the point.
 

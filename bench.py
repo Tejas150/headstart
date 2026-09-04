@@ -40,6 +40,13 @@ WHAT COUNTS AS BROKEN
     detect, so it is reported as its own column rather than averaged into a
     latency percentile.
 
+    A refusal is not broken either. Once the server has a door (server.py
+    design note 4) a request can end with no audio and no failure, so the
+    three outcomes -- served, served-with-a-gap, refused -- are counted
+    separately. Rolling refusals into the latency table would let the tail
+    improve every time the server turns someone away, which is exactly
+    backwards.
+
 Run:  .venv/bin/python bench.py            (server must be running)
       .venv/bin/python bench.py --levels 1,2,4,8 --requests 6
 """
@@ -71,8 +78,12 @@ class Result:
         self.audio_s = 0.0
         self.queue_ms = 0.0      # summed over chunks: time waiting for the slot
         self.gen_ms = 0.0        # summed over chunks: time inside the model
+        self.door_ms = 0.0       # waiting for admission, before anything is sent
         self.min_lead_s = 0.0    # worst buffer margin seen; < 0 means a gap
         self.chunk_gen: list[float] = []
+        self.refused = False     # turned away at the door; no audio, not a failure
+        self.retry_after_s = 0.0
+        self.client = 0          # which connection issued it, for the fairness check
 
 
 async def one_request(ws, text: str) -> Result:
@@ -87,6 +98,19 @@ async def one_request(ws, text: str) -> Result:
         frame = await ws.recv()
         if isinstance(frame, str):
             meta = json.loads(frame)
+            if meta["type"] == "busy":
+                # Refused before a single sample was sent. Recorded as its own
+                # outcome, not folded into the latency numbers: a request that
+                # was never served has no TTFB, and averaging a fast "no" into
+                # the percentiles makes the tail look better the more the
+                # server turns away.
+                r.refused = True
+                r.door_ms = meta["waited_ms"]
+                r.total_ms = (time.perf_counter() - t0) * 1000
+                r.retry_after_s = meta["retry_after_s"]
+                return r
+            if meta["type"] == "start":
+                r.door_ms = meta.get("door_ms", 0.0)
             if meta["type"] == "end":
                 break
             if meta["type"] == "chunk":
@@ -106,16 +130,25 @@ async def one_request(ws, text: str) -> Result:
     return r
 
 
-async def loop(ws, text: str, n: int, out: list[Result]) -> None:
+async def loop(ws, text: str, n: int, out: list[Result], client: int = 0) -> None:
     """One connection issuing requests back to back (closed loop).
 
     Closed loop, not open loop: N here means N conversations in flight, which
     is how a TTS service is actually loaded. An open-loop generator would let
     the backlog grow forever once past saturation and end up measuring the
     backlog rather than the server.
+
+    A refusal is honoured, not retried immediately. A client that ignores the
+    retry hint turns admission control into a busy-loop, and the refusal count
+    then measures how fast the client can re-ask rather than how often the
+    server was full.
     """
     for _ in range(n):
-        out.append(await one_request(ws, text))
+        r = await one_request(ws, text)
+        r.client = client
+        out.append(r)
+        if r.refused:
+            await asyncio.sleep(r.retry_after_s)
 
 
 async def level(url: str, text: str, n_clients: int, n_requests: int,
@@ -135,7 +168,8 @@ async def level(url: str, text: str, n_clients: int, n_requests: int,
         if warmup:
             await asyncio.gather(*[loop(ws, text, warmup, []) for ws in conns])
         t0 = time.perf_counter()
-        await asyncio.gather(*[loop(ws, text, n_requests, results) for ws in conns])
+        await asyncio.gather(*[loop(ws, text, n_requests, results, i)
+                               for i, ws in enumerate(conns)])
         elapsed = time.perf_counter() - t0
     finally:
         await asyncio.gather(*[ws.close() for ws in conns])
@@ -151,6 +185,11 @@ def pct(values: list[float], p: float) -> float:
     return s[lo] + (s[hi] - s[lo]) * (k - lo)
 
 
+def served(rs: list[Result]) -> list[Result]:
+    """Requests that actually produced audio. Refusals are counted separately."""
+    return [r for r in rs if not r.refused]
+
+
 def control_check(base: list[Result], control: list[Result]) -> bool:
     """Re-measure the first level last and require the two to agree.
 
@@ -162,8 +201,8 @@ def control_check(base: list[Result], control: list[Result]) -> bool:
     the cheapest way to detect that, and it is checked here rather than eyeballed
     because a benchmark that cannot invalidate itself is decoration.
     """
-    b = statistics.median([r.total_ms for r in base])
-    c = statistics.median([r.total_ms for r in control])
+    b = statistics.median([r.total_ms for r in served(base)])
+    c = statistics.median([r.total_ms for r in served(control)])
     drift = max(b, c) / min(b, c)
     ok = drift <= 1.15
     print(f"\n  Control — first level re-run last")
@@ -177,11 +216,11 @@ def control_check(base: list[Result], control: list[Result]) -> bool:
 
 def report(levels: dict[int, list[Result]], wall: dict[int, float],
            control: list[Result] | None = None) -> None:
-    base = levels[min(levels)]
+    base = served(levels[min(levels)])
     if control:
-        if control_check(base, control):
+        if control_check(levels[min(levels)], control):
             # Both windows are valid samples of the same state, so pool them.
-            base = base + control
+            base = base + served(control)
     ttfb1 = statistics.median([r.ttfb_ms for r in base])
     # Mean, not median. The wait is a *sum* of the other clients' chunks, and
     # the expectation of a sum is the sum of means. Chunk generation is heavily
@@ -193,35 +232,70 @@ def report(levels: dict[int, list[Result]], wall: dict[int, float],
     n_samples = len(levels[min(levels)])
     print(f"\n  Latency under concurrency — {n_samples} requests per client, "
           f"paragraph, lead_words=server default\n")
-    print(f"  {'clients':>7} {'reqs':>5} {'TTFB p50':>9} {'p90':>8} {'p95':>8} "
+    print(f"  {'clients':>7} {'served':>7} {'TTFB p50':>9} {'p90':>8} {'p95':>8} "
           f"{'max':>8} {'predicted':>10} {'gap':>7}")
     print("  " + "-" * 70)
     for n in sorted(levels):
-        t = [r.ttfb_ms for r in levels[n]]
+        rs = served(levels[n])
+        if not rs:
+            print(f"  {n:>7} {0:>7}      — everything refused")
+            continue
+        t = [r.ttfb_ms for r in rs]
         predicted = ttfb1 + (n - 1) * chunk_ms
         p50 = pct(t, 0.50)
-        print(f"  {n:>7} {len(t):>5} {p50:>6.0f} ms {pct(t, 0.90):>5.0f} ms "
+        print(f"  {n:>7} {len(t):>7} {p50:>6.0f} ms {pct(t, 0.90):>5.0f} ms "
               f"{pct(t, 0.95):>5.0f} ms {max(t):>5.0f} ms {predicted:>7.0f} ms "
               f"{p50 / predicted:>6.2f}x")
     print(f"\n  predicted = TTFB(1) {ttfb1:.0f} ms + (N-1) x mean chunk "
           f"{chunk_ms:.0f} ms — one chunk from each client ahead in the slot.")
+    print("  Served requests only. A refusal has no TTFB, and folding a fast")
+    print("  'no' into the percentiles would improve the tail as the server")
+    print("  turns more people away.")
 
     print(f"\n  Where the time goes\n")
-    print(f"  {'clients':>7} {'queue p50':>10} {'gen p50':>9} {'queue share':>12} "
-          f"{'min lead':>9} {'gaps':>7} {'throughput':>11}")
-    print("  " + "-" * 72)
+    print(f"  {'clients':>7} {'door p50':>9} {'queue p50':>10} {'gen p50':>9} "
+          f"{'min lead':>9} {'gaps':>7} {'refused':>8} {'throughput':>11}")
+    print("  " + "-" * 80)
     for n in sorted(levels):
-        rs = levels[n]
+        rs = served(levels[n])
+        refused = sum(1 for r in levels[n] if r.refused)
+        audio = sum(r.audio_s for r in levels[n])
+        if not rs:
+            print(f"  {n:>7} {'—':>9} {'—':>10} {'—':>9} {'—':>9} {'—':>7} "
+                  f"{refused:>3}/{len(levels[n]):<4} {0.0:>7.2f} a-s/s")
+            continue
+        d = pct([r.door_ms for r in rs], 0.50)
         q = pct([r.queue_ms for r in rs], 0.50)
         g = pct([r.gen_ms for r in rs], 0.50)
         gaps = sum(1 for r in rs if r.min_lead_s < 0)
-        audio = sum(r.audio_s for r in rs)
-        print(f"  {n:>7} {q:>7.0f} ms {g:>6.0f} ms {q / (q + g) * 100:>11.0f}% "
+        print(f"  {n:>7} {d:>6.0f} ms {q:>7.0f} ms {g:>6.0f} ms "
               f"{min(r.min_lead_s for r in rs):>+7.2f}s {gaps:>3}/{len(rs):<3} "
-              f"{audio / wall[n]:>7.2f} a-s/s")
-    print("\n  queue share is the batcher's addressable surface: model time is")
-    print("  fixed by the graph, waiting is not. gaps counts requests whose")
-    print("  buffer ran dry — the only failure the listener can actually hear.")
+              f"{refused:>3}/{len(levels[n]):<4} {audio / wall[n]:>7.2f} a-s/s")
+    print("\n  door is the wait for admission, before anything is sent; queue is")
+    print("  the wait for the model slot, after. gaps counts served requests")
+    print("  whose buffer ran dry — the only failure the listener can hear.")
+    print("  refused is the number turned away before a single sample went out.")
+
+    # Fairness. A door that serves exactly its capacity looks identical in the
+    # totals whether it rotates fairly or serves the same three clients every
+    # time and starves the rest -- "18 of 48 served" is the same number either
+    # way. Only the per-client spread tells them apart, and starvation is a
+    # worse failure than the queueing this replaced, so it is checked rather
+    # than assumed.
+    if any(r.refused for rs in levels.values() for r in rs):
+        print(f"\n  Fairness — was the same client served every time?\n")
+        print(f"  {'clients':>7} {'served per client':>20} {'spread':>9} "
+              f"{'starved':>9}")
+        print("  " + "-" * 50)
+        for n in sorted(levels):
+            per = [sum(1 for r in levels[n] if r.client == c and not r.refused)
+                   for c in range(n)]
+            starved = sum(1 for c in per if c == 0)
+            print(f"  {n:>7}   {str(sorted(per, reverse=True)):>18} "
+                  f"{max(per) - min(per):>7}   {starved:>7}")
+        print("\n  spread is best-served client minus worst. 0 is perfect rotation;")
+        print("  a spread equal to the request count means some clients got")
+        print("  everything and the rest got nothing.")
 
     cap = 1 / rtf1
     peak = max(sum(r.audio_s for r in levels[n]) / wall[n] for n in levels)
@@ -232,11 +306,16 @@ def report(levels: dict[int, list[Result]], wall: dict[int, float],
     # Independent route to the same line: arithmetic says the queue starts
     # growing past 1/RTF streams; listening says it starts at the first level
     # where a buffer runs dry. They should land in the same place.
-    clean = [n for n in sorted(levels) if not any(r.min_lead_s < 0 for r in levels[n])]
-    broke = [n for n in sorted(levels) if any(r.min_lead_s < 0 for r in levels[n])]
+    clean = [n for n in sorted(levels)
+             if not any(r.min_lead_s < 0 for r in served(levels[n]))]
+    broke = [n for n in sorted(levels)
+             if any(r.min_lead_s < 0 for r in served(levels[n]))]
     if clean and broke:
         print(f"    observed                   gap-free to {max(clean)}, "
               f"gaps from {min(broke)}  ->  saturates between them")
+    elif clean and not broke:
+        print(f"    observed                   gap-free at every level to "
+              f"{max(clean)}  ->  demand above capacity was refused, not queued")
     # One model call at a time means the server cannot emit audio faster than
     # one stream generates it. Measured throughput above 1/RTF is not a good
     # result, it is a contradiction -- either the slot is not serialising or the
@@ -259,11 +338,24 @@ async def main() -> None:
                         help="measured requests per client per level")
     parser.add_argument("--warmup", type=int, default=1,
                         help="unmeasured requests per client before the window")
+    parser.add_argument("--settle", type=int, default=4,
+                        help="discarded requests before the sweep, to warm the box")
     args = parser.parse_args()
 
     ns = [int(x) for x in args.levels.split(",")]
     levels: dict[int, list[Result]] = {}
     wall: dict[int, float] = {}
+
+    # Settle before the sweep, not just before each level. The lowest level is
+    # the baseline every ratio is quoted against, so anything it pays once and
+    # the later levels do not is a bias in favour of the later levels. A server
+    # idle for a while pays exactly that: the allocator's arenas and the weight
+    # pages have to be faulted back in. The first attempt at this run was voided
+    # by the control check for that reason -- the baseline came out 1.44x slower
+    # than the same level re-run at the end.
+    if args.settle:
+        print(f"  settling — {args.settle} discarded requests...", flush=True)
+        await level(args.url, PARAGRAPH, 1, args.settle, 0)
 
     for n in ns:
         print(f"  running {n} client{'s' if n > 1 else ''} "

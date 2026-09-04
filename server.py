@@ -38,6 +38,30 @@ THE THREE DESIGN DECISIONS THAT MATTER HERE
      Kokoro emits float32 in [-1, 1] and the conversion is exact enough for
      speech.
 
+  4. A door in front of the slot, and it says no (DOOR, MAX_INFLIGHT).
+     bench.py measured the ceiling: this machine sustains ~3.3 realtime
+     streams, and past that the fourth listener does not get slower audio, it
+     gets a hole in the middle of a sentence. Without a door the server
+     accepts the fourth request anyway and breaks it after it has already
+     started speaking.
+
+     A wait is legible -- the listener reads it as loading. A stutter is not
+     attributable: they cannot tell server load from a broken product, so
+     they conclude the product is broken. So: never accept a stream you
+     cannot finish cleanly. Past MAX_INFLIGHT a request waits at the door for
+     one slot-turnover and is then refused with a retry hint, before a single
+     sample has been sent.
+
+     This buys no throughput and is not meant to. Throughput is fixed by the
+     graph (finding 10: the ceiling is already reached by one client). The
+     door only decides who gets served, and its claim is the tail and the gap
+     count, not the median -- which it makes worse on purpose.
+
+     Which makes the order the whole design, and first-come-first-served turns
+     out to be the wrong one: a refused caller backs off, and backing off means
+     losing your place to the callers who were just served. So refusals age a
+     caller up the queue. See Door.
+
 CHUNKING
     Block 1 established sentence boundaries as the cut points. But a lone
     sentence has no interior boundary, so its first chunk is the whole clip
@@ -105,7 +129,145 @@ SENTENCE_GAP_S = 0.277
 # Only one model call runs at a time; see design note 2 above.
 MODEL_SLOT = asyncio.Semaphore(1)
 
+# How many requests may be generating at once. Measured, not chosen.
+#
+# Capacity is 1/RTF = 1/0.304 = 3.3 realtime streams, and bench.py agrees from
+# the other direction: throughput flattens at 3.27 audio-seconds per second,
+# and buffers first run dry between 3 clients and 4. So 3 is the last level
+# that was measured clean -- worst buffer margin +1.85 s, 0 of 18 requests
+# stalled -- and 4 is the first that was not: 6 of 24 stalled.
+#
+# Not 4, for two reasons. The stalls at 4 happen *among the four accepted*, so
+# admitting 4 and rejecting the fifth does not fix them; it just relabels a
+# broken stream as an accepted one. And 3.3 is not a constant -- it moves with
+# text length, voice, speed and what else the box is doing -- so the safe side
+# of a line that drifts is below it. 3 leaves ~9% of capacity idle. 4
+# overcommits by 21% and a quarter of requests stutter.
+MAX_INFLIGHT = 3
+
+# How long a request waits at the door before it is refused. Derived, not
+# picked: at MAX_INFLIGHT in flight a request holds its slot for the whole of
+# its lifetime, measured at ~15.7 s (10474 ms queued + 5200 ms generating), so
+# across 3 slots one comes free every 15.7 / 3 = 5.2 s.
+#
+# That is the whole argument. If a slot has not come free within the time it
+# takes one to come free, you are not next in line -- you are behind someone
+# who is, and the wait only grows from here. Waiting longer converts a refusal
+# the caller can act on into a timeout it cannot.
+DOOR_WAIT_S = 5.2
+
 state: dict = {}
+
+
+# ------------------------------------------------------------------- door
+class Busy(Exception):
+    """Refused at the door. Nothing was generated and nothing was sent."""
+
+
+class Waiter(object):
+    __slots__ = ("priority", "seq", "fut")
+
+    def __init__(self, priority: int, seq: int, fut: asyncio.Future) -> None:
+        self.priority = priority    # consecutive refusals this caller has taken
+        self.seq = seq              # arrival order, breaks ties
+        self.fut = fut
+
+
+class Door(object):
+    """Admission control: at most `capacity` requests generating at once.
+
+    Deliberately not asyncio.Semaphore. A semaphore is already a scheduling
+    policy -- first-come-first-served, wait forever, no visibility -- it just
+    does not look like one, so the policy never gets chosen on purpose. Writing
+    the queue out is what makes the policy a decision: refuse rather than queue
+    forever, report what is in flight, and change the order without touching
+    the handler.
+
+    THE ORDER IS NOT FIFO, AND FIFO IS WHY
+        The first version handed each free slot to whoever had waited longest,
+        which is the obvious fair answer and is wrong here. A refused caller
+        backs off before retrying, and while it is backing off it is not in the
+        queue at all -- so it returns behind the callers that were just served,
+        who re-queue the instant they finish. Being refused therefore makes the
+        next refusal more likely, and the effect compounds.
+
+        Measured, at 8 clients against 3 slots: served counts per client came
+        out [4, 4, 4, 3, 2, 1, 0, 0]. Two clients were refused every single
+        time. The totals hide this completely -- 18 of 48 served is the same
+        number whether the door rotates fairly or picks favourites -- which is
+        why bench.py reports the per-client spread and not just the count.
+
+        So the door remembers. Each refusal raises that caller's priority, and
+        a free slot goes to the highest priority waiting, arrival order only
+        breaking ties. Successful admission resets it to zero. This is ageing:
+        the cost of being turned away is paid back the next time you ask, which
+        is the property FIFO loses the moment callers back off.
+
+    A fresh arrival still only takes a slot when nobody is waiting at all --
+    barging would be faster on average and would do the starving all over again.
+    """
+
+    def __init__(self, capacity: int) -> None:
+        self.capacity = capacity
+        self.in_flight = 0
+        self.admitted = 0
+        self.refused = 0
+        self._waiters: list[Waiter] = []
+        self._seq = 0
+
+    @property
+    def enabled(self) -> bool:
+        # capacity 0 turns the door off entirely. The before/after arms of the
+        # benchmark then differ by one flag rather than by a code version, so
+        # "was it the same build?" stops being a question about the result.
+        return self.capacity > 0
+
+    async def enter(self, timeout: float, priority: int = 0) -> float:
+        """Take a slot, or raise Busy. Returns seconds spent waiting.
+
+        `priority` is how many times in a row this caller has already been
+        refused. Higher goes first.
+        """
+        if not self.enabled:
+            return 0.0
+        if self.in_flight < self.capacity and not self._waiters:
+            self.in_flight += 1
+            self.admitted += 1
+            return 0.0
+
+        self._seq += 1
+        w = Waiter(priority, self._seq, asyncio.get_running_loop().create_future())
+        self._waiters.append(w)
+        t0 = time.perf_counter()
+        try:
+            # If the slot is handed over as the timer fires, wait_for returns
+            # the result rather than raising -- so a slot is never granted and
+            # then dropped, which would shrink capacity by one permanently.
+            await asyncio.wait_for(w.fut, timeout)
+        except asyncio.TimeoutError:
+            with contextlib.suppress(ValueError):
+                self._waiters.remove(w)
+            self.refused += 1
+            raise Busy()
+        self.admitted += 1
+        return time.perf_counter() - t0
+
+    def leave(self) -> None:
+        if not self.enabled:
+            return
+        self.in_flight -= 1
+        # Most refused, then longest waiting. The list is at most a few dozen
+        # entries, so a scan is cheaper to read than a heap and costs nothing.
+        while self._waiters:
+            w = min(self._waiters, key=lambda x: (-x.priority, x.seq))
+            self._waiters.remove(w)
+            if not w.fut.done():        # skip anyone who already timed out
+                self.in_flight += 1
+                w.fut.set_result(True)
+                return
+
+
+DOOR = Door(MAX_INFLIGHT)
 
 
 # --------------------------------------------------------------- chunking
@@ -203,6 +365,11 @@ async def health() -> dict:
         "sample_rate": SAMPLE_RATE,
         "intra_op_threads": INTRA_OP_THREADS,
         "inter_op_threads": INTER_OP_THREADS,
+        "max_inflight": DOOR.capacity,
+        "door_wait_s": DOOR_WAIT_S,
+        "in_flight": DOOR.in_flight,
+        "admitted": DOOR.admitted,
+        "refused": DOOR.refused,
     }
 
 
@@ -221,6 +388,10 @@ async def synth(text: str, voice: str, speed: float) -> tuple[np.ndarray, float,
 @app.websocket("/tts")
 async def tts(ws: WebSocket) -> None:
     await ws.accept()
+    # Consecutive refusals on this connection. Lives here rather than in the
+    # door because the connection is already the natural identity for a caller,
+    # and a per-connection counter cannot leak: it dies with the socket.
+    refusals = 0
     try:
         while True:
             request = json.loads(await ws.receive_text())
@@ -235,56 +406,98 @@ async def tts(ws: WebSocket) -> None:
                 lead_words = DEFAULT_LEAD_WORDS
 
             chunks = chunk_text(text, lead_words)
-            await ws.send_text(json.dumps({
-                "type": "start",
-                "sample_rate": SAMPLE_RATE,
-                "format": "s16le",
-                "chunks": len(chunks),
-            }))
 
-            ttfb_ms = None
-            audio_s = 0.0
-            gen_total = 0.0
-            for i, (chunk, gap_s) in enumerate(chunks):
-                samples, queue_ms, gen_ms = await synth(chunk, voice, speed)
-                pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2").tobytes()
-                # Restored inter-sentence pause. Free audio: no model time.
-                pcm += silence(gap_s)
-
-                elapsed = (time.perf_counter() - t0) * 1000
-                if ttfb_ms is None:
-                    ttfb_ms = elapsed
-                audio_s += len(samples) / SAMPLE_RATE + gap_s
-                gen_total += gen_ms
-
-                # `lead` is the point of the whole project: seconds of audio
-                # handed over, minus seconds the listener has already spent
-                # playing. Positive means they never hear a gap.
+            # The door comes before the `start` frame, so a refusal happens
+            # before the client has been told anything is coming. Refusing
+            # after `start` would be the failure this is here to prevent, one
+            # frame earlier.
+            try:
+                door_s = await DOOR.enter(DOOR_WAIT_S, priority=refusals)
+            except Busy:
+                refusals += 1
                 await ws.send_text(json.dumps({
-                    "type": "chunk",
-                    "index": i,
-                    "text": chunk,
-                    "bytes": len(pcm),
-                    "audio_s": round(len(samples) / SAMPLE_RATE + gap_s, 3),
-                    "gap_s": gap_s,
-                    "queue_ms": round(queue_ms, 1),
-                    "gen_ms": round(gen_ms, 1),
-                    "elapsed_ms": round(elapsed, 1),
-                    "lead_s": round(audio_s - (elapsed - ttfb_ms) / 1000, 3),
+                    "type": "busy",
+                    "in_flight": DOOR.in_flight,
+                    "capacity": DOOR.capacity,
+                    # A refusal without a hint just moves the decision to the
+                    # caller's guesswork; with one, a client backs off by about
+                    # the time it actually takes a slot to free.
+                    "retry_after_s": round(DOOR_WAIT_S, 1),
+                    "waited_ms": round((time.perf_counter() - t0) * 1000, 1),
+                    # Sent so the caller can see it is gaining ground rather
+                    # than being ignored, and so the ageing is falsifiable from
+                    # the client side instead of being a claim in a comment.
+                    "refusals": refusals,
+                    "detail": (f"at capacity ({DOOR.capacity} streams); no slot "
+                               f"freed in {DOOR_WAIT_S:.1f}s"),
                 }))
-                await ws.send_bytes(pcm)
+                continue
+            refusals = 0
 
-            total_ms = (time.perf_counter() - t0) * 1000
-            await ws.send_text(json.dumps({
-                "type": "end",
-                "ttfb_ms": round(ttfb_ms or 0.0, 1),
-                "total_ms": round(total_ms, 1),
-                "audio_s": round(audio_s, 3),
-                # RTF = generation ÷ audio. Below 1.0 is faster than realtime.
-                "rtf": round(total_ms / 1000 / audio_s, 3) if audio_s else None,
-                # What the transport and the framework cost on top of the model.
-                "overhead_ms": round(total_ms - gen_total, 1),
-            }))
+            try:
+                await ws.send_text(json.dumps({
+                    "type": "start",
+                    "sample_rate": SAMPLE_RATE,
+                    "format": "s16le",
+                    "chunks": len(chunks),
+                    # Waiting at the door, kept apart from queue_ms (waiting for
+                    # the slot) and gen_ms (inside the model) for the same
+                    # reason those two are kept apart: three different costs.
+                    "door_ms": round(door_s * 1000, 1),
+                    "in_flight": DOOR.in_flight,
+                }))
+
+                ttfb_ms = None
+                audio_s = 0.0
+                gen_total = 0.0
+                for i, (chunk, gap_s) in enumerate(chunks):
+                    samples, queue_ms, gen_ms = await synth(chunk, voice, speed)
+                    pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2").tobytes()
+                    # Restored inter-sentence pause. Free audio: no model time.
+                    pcm += silence(gap_s)
+
+                    elapsed = (time.perf_counter() - t0) * 1000
+                    if ttfb_ms is None:
+                        ttfb_ms = elapsed
+                    audio_s += len(samples) / SAMPLE_RATE + gap_s
+                    gen_total += gen_ms
+
+                    # `lead` is the point of the whole project: seconds of audio
+                    # handed over, minus seconds the listener has already spent
+                    # playing. Positive means they never hear a gap.
+                    await ws.send_text(json.dumps({
+                        "type": "chunk",
+                        "index": i,
+                        "text": chunk,
+                        "bytes": len(pcm),
+                        "audio_s": round(len(samples) / SAMPLE_RATE + gap_s, 3),
+                        "gap_s": gap_s,
+                        "queue_ms": round(queue_ms, 1),
+                        "gen_ms": round(gen_ms, 1),
+                        "elapsed_ms": round(elapsed, 1),
+                        "lead_s": round(audio_s - (elapsed - ttfb_ms) / 1000, 3),
+                    }))
+                    await ws.send_bytes(pcm)
+
+                total_ms = (time.perf_counter() - t0) * 1000
+                await ws.send_text(json.dumps({
+                    "type": "end",
+                    "ttfb_ms": round(ttfb_ms or 0.0, 1),
+                    "total_ms": round(total_ms, 1),
+                    "door_ms": round(door_s * 1000, 1),
+                    "audio_s": round(audio_s, 3),
+                    # RTF = generation ÷ audio. Below 1.0 is faster than realtime.
+                    "rtf": round(total_ms / 1000 / audio_s, 3) if audio_s else None,
+                    # What the transport and the framework cost on top of the model.
+                    "overhead_ms": round(total_ms - gen_total, 1),
+                }))
+            finally:
+                # Held for the whole request, not per chunk. A slot released
+                # between chunks would let a new stream in to compete with one
+                # already mid-sentence, which is the situation the door exists
+                # to prevent. `finally` so a disconnect mid-generation returns
+                # the slot instead of leaking capacity one client at a time.
+                DOOR.leave()
     except WebSocketDisconnect:
         pass
 
@@ -295,5 +508,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--max-inflight", type=int, default=MAX_INFLIGHT,
+                        help="streams served at once; 0 turns the door off")
+    parser.add_argument("--door-wait", type=float, default=DOOR_WAIT_S,
+                        help="seconds to wait at the door before being refused")
     args = parser.parse_args()
+
+    DOOR.capacity = args.max_inflight
+    DOOR_WAIT_S = args.door_wait
+    print(f"door: max_inflight={DOOR.capacity or 'off'}, wait={DOOR_WAIT_S:.1f}s")
+
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")

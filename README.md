@@ -93,6 +93,8 @@ Model weights are gitignored (311 MB) — pull them with the commands above.
 
 </details>
 
+**To talk to it yourself**, the WebSocket protocol is written up in [`docs/api.md`](docs/api.md) — the request fields, the `start` / `chunk` / `end` / `busy` frames, a real annotated trace, and what to do when you get refused.
+
 **Benchmark on a quiet machine.** `bench.py` re-runs its lowest level at the end as a control and prints the drift; anything over 15% and it declares the run void rather than publishing. It means it — a browser eating a core is enough to fail it, which is a feature rather than an inconvenience, because those numbers would have been wrong and silently plausible.
 
 ---

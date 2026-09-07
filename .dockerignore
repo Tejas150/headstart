@@ -1,0 +1,10 @@
+# Keep the build context small. models/ is 311 MB and is fetched inside the
+# image (or mounted at run time), so sending it as context would pay for it
+# twice on every build.
+models/
+.venv/
+__pycache__/
+*.pyc
+*.wav
+.git/
+.gitignore

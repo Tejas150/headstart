@@ -48,6 +48,25 @@ The order of that queue turned out to matter as much as its length. Plain first-
 ## Run it
 
 ```bash
+docker build -t headstart .
+docker run --rm -p 8000:8000 headstart
+curl localhost:8000/health
+```
+
+That's the whole setup. The image carries the 311 MB of weights, so there is nothing to download and no Python to install — which is the point, since a reader who can't run it can't check any of the numbers below. It's ~1.14 GB as a result, and that trade is deliberate: the alternative is a small image plus a setup step, and the setup step is the thing being removed.
+
+If you'd rather not bake the weights in, `--build-arg FETCH_MODELS=0` and mount your own at `/app/models`.
+
+One flag matters if you constrain CPU. The server defaults to 8 ONNX threads because that's the physical core count it was measured on, and `os.cpu_count()` inside a container reports the *host*, not your quota — so it can't autodetect this correctly. Tell it:
+
+```bash
+docker run --cpus 4 -e HEADSTART_INTRA_OP=4 -p 8000:8000 headstart
+```
+
+<details>
+<summary>Or run it directly, which is what the benchmarks below were measured on</summary>
+
+```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 # if python3-venv isn't installed and you don't have sudo:
 #   pip3 install --user virtualenv && python3 -m virtualenv .venv
@@ -71,6 +90,10 @@ To reproduce findings 11 and 12 — the load sweep with the door on, then off:
 ```
 
 Model weights are gitignored (311 MB) — pull them with the commands above.
+
+</details>
+
+**Benchmark on a quiet machine.** `bench.py` re-runs its lowest level at the end as a control and prints the drift; anything over 15% and it declares the run void rather than publishing. It means it — a browser eating a core is enough to fail it, which is a feature rather than an inconvenience, because those numbers would have been wrong and silently plausible.
 
 ---
 

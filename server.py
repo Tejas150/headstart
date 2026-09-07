@@ -83,6 +83,7 @@ import argparse
 import asyncio
 import contextlib
 import json
+import os
 import re
 import time
 
@@ -91,16 +92,24 @@ import onnxruntime as rt
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from kokoro_onnx import Kokoro
 
-MODEL = "models/kokoro-v1.0.onnx"
-VOICES = "models/voices-v1.0.bin"
+# Overridable so the weights can live outside the working directory -- a
+# container mounts them at a fixed path, and a K8s volume will not be at ./models.
+MODEL = os.environ.get("HEADSTART_MODEL", "models/kokoro-v1.0.onnx")
+VOICES = os.environ.get("HEADSTART_VOICES", "models/voices-v1.0.bin")
 SAMPLE_RATE = 24000
 
 # Measured in block 2 (isolate.py): on the full sentence intra_op=8 is the
 # entire 1.27x and inter_op does nothing; on a short chunk the two interact.
 # 8 is the physical core count of the 4800H -- 16 is slower than 8 because two
 # SMT threads on one core share a load/store path. Reported as one setting.
-INTRA_OP_THREADS = 8
-INTER_OP_THREADS = 1
+#
+# 8 is the measured default and stays the default, so an unconfigured run
+# reproduces the README. It is overridable because the right number is the
+# host's *physical* cores, and under a container CPU limit that is neither 8
+# nor what os.cpu_count() reports -- cpu_count sees the host, not the quota,
+# so autodetecting here would confidently pick the wrong number.
+INTRA_OP_THREADS = int(os.environ.get("HEADSTART_INTRA_OP", "8"))
+INTER_OP_THREADS = int(os.environ.get("HEADSTART_INTER_OP", "1"))
 
 # Swept in leadsweep.py (median of 3, not best-of). TTFB falls monotonically as
 # the first chunk shrinks -- and tracks block 2's `300 + 374 x audio_s` fit, so
@@ -506,8 +515,12 @@ if __name__ == "__main__":
     import uvicorn
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8000)
+    # Loopback by default: this binds a model that answers to anyone who can
+    # reach it, so exposing it is an explicit act. In a container the interface
+    # is the container's own, so the entrypoint passes --host 0.0.0.0 there.
+    parser.add_argument("--host", default=os.environ.get("HEADSTART_HOST", "127.0.0.1"))
+    parser.add_argument("--port", type=int,
+                        default=int(os.environ.get("HEADSTART_PORT", "8000")))
     parser.add_argument("--max-inflight", type=int, default=MAX_INFLIGHT,
                         help="streams served at once; 0 turns the door off")
     parser.add_argument("--door-wait", type=float, default=DOOR_WAIT_S,

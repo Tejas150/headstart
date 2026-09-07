@@ -15,6 +15,8 @@ Two chunk sizes are measured, because the answer can differ: a short chunk
 throughput depends on).
 """
 
+import _root  # noqa: F401  -- chdir to repo root; see _root.py
+
 import time
 
 import onnxruntime as rt

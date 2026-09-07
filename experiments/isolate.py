@@ -18,6 +18,8 @@ They are different kinds of parallelism and there is no reason to assume
 the win came from the one we assumed.
 """
 
+import _root  # noqa: F401  -- chdir to repo root; see _root.py
+
 import time
 
 import onnxruntime as rt

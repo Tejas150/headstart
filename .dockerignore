@@ -2,6 +2,11 @@
 # image (or mounted at run time), so sending it as context would pay for it
 # twice on every build.
 models/
+
+# The measurement scripts are evidence, not runtime. They run from a checkout
+# on a known machine; the image only needs the server and its two clients.
+experiments/
+
 .venv/
 __pycache__/
 *.pyc

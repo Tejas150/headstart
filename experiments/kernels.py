@@ -30,6 +30,8 @@ WHAT EACH RESULT WOULD MEAN
                           the hardware-bound term after all.
 """
 
+import _root  # noqa: F401  -- chdir to repo root; see _root.py
+
 import collections
 import itertools
 import json

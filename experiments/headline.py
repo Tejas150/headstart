@@ -35,6 +35,8 @@ Run against a live server:  .venv/bin/python headline.py
 
 from __future__ import annotations
 
+import _root  # noqa: F401  -- chdir to repo root; see _root.py
+
 import asyncio
 import json
 import statistics

@@ -27,6 +27,8 @@ THE PART THAT MATTERS MORE THAN THE SPEEDUP
     lengths match.
 """
 
+import _root  # noqa: F401  -- chdir to repo root; see _root.py
+
 import os
 import time
 

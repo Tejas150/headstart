@@ -21,6 +21,8 @@ than the one that built the session can cost the affinity, which would show up
 here and nowhere in the benchmarks.
 """
 
+import _root  # noqa: F401  -- chdir to repo root; see _root.py
+
 import asyncio
 import time
 

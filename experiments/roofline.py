@@ -35,6 +35,8 @@ A prediction that does not survive all four is not a prediction worth
 booking a cloud instance on.
 """
 
+import _root  # noqa: F401  -- chdir to repo root; see _root.py
+
 import collections
 import json
 import math

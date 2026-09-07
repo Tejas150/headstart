@@ -5,6 +5,8 @@ separate costs. They get separate numbers from day one, because
 every metric in this project is a number in the README later.
 """
 
+import _root  # noqa: F401  -- chdir to repo root; see _root.py
+
 import time
 
 import soundfile as sf

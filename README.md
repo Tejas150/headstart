@@ -20,9 +20,9 @@ Three-sentence paragraph, 17.2 s of audio, measured end-to-end from the client:
 
 **6.4× sooner to first sound**, for the same 17.2 s of audio, and the buffer never runs dry — `lead` (audio in hand minus audio already played) stays positive at every chunk, so there is no gap. Total time paid for it: 5999 ms vs 5380 ms, **1.12×**.
 
-> **Median of 3, with the full spread shown, and all three rows measured in one run** by `headline.py`. Not best-of-N: best-of measures the machine on its luckiest day, which isn't the day the listener gets. A median without a spread would hide the tail — and the tail is exactly what chose the default in finding 6.
+> **Median of 3, with the full spread shown, and all three rows measured in one run** by `experiments/headline.py`. Not best-of-N: best-of measures the machine on its luckiest day, which isn't the day the listener gets. A median without a spread would hide the tail — and the tail is exactly what chose the default in finding 6.
 >
-> All three rows come from one script and one machine state on purpose. A speedup table whose rows were gathered under different conditions isn't a speedup table; it's three unrelated numbers in a column. `headline.py` also asserts that every row describes the same length of audio, so the comparison can't quietly become "a shorter clip" instead of "a faster one."
+> All three rows come from one script and one machine state on purpose. A speedup table whose rows were gathered under different conditions isn't a speedup table; it's three unrelated numbers in a column. `experiments/headline.py` also asserts that every row describes the same length of audio, so the comparison can't quietly become "a shorter clip" instead of "a faster one."
 
 Transport is not where the time goes: **connect + WebSocket + framing is 33 ms of a 6.4 s run.** That is why the transport was built *last* — see the ordering note under Status.
 
@@ -134,7 +134,7 @@ Framework overhead — Python, the ONNX dispatcher, everything that isn't math �
 
 8 threads beats the default and beats 16. 8 is the physical core count; two SMT threads on one core share a load/store path, so the second one contends rather than helps.
 
-Setting `intra_op` and `inter_op` together and comparing against a run that sets neither gives a number — "1.34×" — that **cannot be attributed to either knob**. `isolate.py` varies them one at a time:
+Setting `intra_op` and `inter_op` together and comparing against a run that sets neither gives a number — "1.34×" — that **cannot be attributed to either knob**. `experiments/isolate.py` varies them one at a time:
 
 | config | short chunk | full sentence |
 |---|---|---|
@@ -204,7 +204,7 @@ TTFB(target) ≈ 261ms × (FLOPS_here / FLOPS_there)     ← Conv, saturating co
 
 Block 2 said the floor is ~300 ms, so a 1594 ms first chunk is nowhere near it — because a long first sentence is a long forward pass. Cutting the first segment at a clause boundary takes it to **840 ms** for the same total audio.
 
-How small should that first chunk be? Smaller fails in two directions: total time rises (every chunk pays the ~300 ms fixed cost again), and the buffer can run dry — a tiny first chunk starts playback almost immediately and then has to be fed faster than the model generates. `lead` going negative is the one failure that actually breaks a streaming product. So it was swept (`leadsweep.py`, median of 3):
+How small should that first chunk be? Smaller fails in two directions: total time rises (every chunk pays the ~300 ms fixed cost again), and the buffer can run dry — a tiny first chunk starts playback almost immediately and then has to be fed faster than the model generates. `lead` going negative is the one failure that actually breaks a streaming product. So it was swept (`experiments/leadsweep.py`, median of 3):
 
 | `lead_words` | TTFB median | spread | min lead |
 |---|---|---|---|
@@ -223,7 +223,7 @@ It isn't free. The two renderings correlate at only **+0.71** and diverge 40 ms 
 
 So the pause is re-inserted as silence at sentence boundaries — and *not* at a clause split inside a sentence, where there was never a pause to restore. It costs zero model time, and since it's audio handed over for free it **raises** `lead` instead of spending it: the prosody is restored and the buffer margin improves at the same time.
 
-This is invisible to every latency metric in the table, which is why `headline.py` asserts on audio length as well as time. A chunking policy that ships sooner by quietly emitting less audio would otherwise look like a win.
+This is invisible to every latency metric in the table, which is why `experiments/headline.py` asserts on audio length as well as time. A chunking policy that ships sooner by quietly emitting less audio would otherwise look like a win.
 
 ### 7. This graph cannot batch
 
@@ -256,7 +256,7 @@ A latency number that doesn't separate queue time from model time isn't a latenc
 
 ### 9. Chunking bottoms out at the architecture, not at the scheduler
 
-If a 5-word first chunk beats a whole sentence, why not go all the way and stream one word at a time? **What I tested:** the same paragraph cut into chunks of 1, 5 and 21 words (`granularity.py`).
+If a 5-word first chunk beats a whole sentence, why not go all the way and stream one word at a time? **What I tested:** the same paragraph cut into chunks of 1, 5 and 21 words (`experiments/granularity.py`).
 
 | words per chunk | time per chunk | audio per chunk | total audio produced |
 |---|---|---|---|
@@ -411,6 +411,18 @@ And per finding 9, most of the remaining gap isn't a serving gap at all. A one-s
 
 ## Repo map — which script proves which claim
 
+The root holds the product; `experiments/` holds the evidence. The split is deliberate: the three files at the top are what you'd run or deploy, and the thirteen below them are one-shot measurements whose output is a number in this README.
+
+**The server**
+
+| file | what it is |
+|---|---|
+| `server.py` | The server and the door. Also findings 6, 8, 11, 12 |
+| `client.py` | Reference client — streams, plays, and reports what it experienced |
+| `bench.py` | Findings 10, 11, 12 — percentiles and saturation, the door on/off comparison, the per-client fairness check |
+
+**The evidence** — `experiments/`
+
 | file | what it establishes |
 |---|---|
 | `speak.py` | M0 baseline — cold start 909 ms, synthesis 1785 ms, RTF 0.41 |
@@ -426,8 +438,8 @@ And per finding 9, most of the remaining gap isn't a serving gap at all. A one-s
 | `leadsweep.py` | Finding 6 — the first-chunk sweep that chose `lead_words=5` |
 | `headline.py` | The table at the top — all three rows, one run, one methodology |
 | `granularity.py` | Finding 9 — chunk-size sweep, citation-form cost, and the graph signature |
-| `bench.py` | Findings 10, 11, 12 — percentiles and saturation, the door on/off comparison, the per-client fairness check |
-| `server.py` / `client.py` | The server and the door, and findings 6, 8, 11, 12 |
+
+Run them from anywhere in the checkout — `experiments/_root.py` anchors the working directory to the repo root, so the relative paths inside each script stay correct and `import server` still resolves. The server itself takes the other route and reads `HEADSTART_MODEL` from the environment, because unlike these it does have to run somewhere else.
 
 Every number in this README came from one of these on the machine described at the top. Re-running them is the point.
 

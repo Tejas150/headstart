@@ -27,6 +27,8 @@ Note: profiling inflates absolute timings. Proportions and the fixed/variable
 split are what this is for, not headline numbers.
 """
 
+import _root  # noqa: F401  -- chdir to repo root; see _root.py
+
 import collections
 import json
 import os

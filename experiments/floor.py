@@ -24,6 +24,8 @@ Also measured separately: phonemization, which happens on the text before
 the model is touched at all and is therefore pure fixed cost.
 """
 
+import _root  # noqa: F401  -- chdir to repo root; see _root.py
+
 import statistics
 import time
 

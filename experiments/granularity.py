@@ -39,6 +39,8 @@ Run:  .venv/bin/python granularity.py
 
 from __future__ import annotations
 
+import _root  # noqa: F401  -- chdir to repo root; see _root.py
+
 import statistics
 import time
 

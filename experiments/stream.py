@@ -27,6 +27,8 @@ minus seconds already played. While it stays positive, the listener never
 hears a gap.
 """
 
+import _root  # noqa: F401  -- chdir to repo root; see _root.py
+
 import asyncio
 import re
 import time

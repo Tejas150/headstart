@@ -28,6 +28,23 @@ Transport is not where the time goes: **connect + WebSocket + framing is 33 ms o
 
 ---
 
+## The second number
+
+Speed is one question. The other is how many people one machine can serve before the audio starts breaking up. **The answer is 3.3 at once**, and it comes out the same two independent ways: the model needs about 0.3 seconds of compute for every second of audio it makes, and measured throughput stops climbing at 3.27 seconds of audio per second no matter how many clients arrive.
+
+Past that line, a server that accepts everyone gives everyone holes in their audio. So this one stops accepting everyone. Eight clients, six requests each, same build, one flag apart:
+
+| 8 clients at once | requests that stalled | p95 to first audio | turned away |
+|---|---|---|---|
+| accept everyone | **48 / 48** | 17828 ms | 0 |
+| refuse past capacity | **0 / 16** | **7457 ms** | 32 / 48 |
+
+**Every stall gone, and the people who do get served wait less than half as long.** Turning some people away made it better for everyone still inside — the unbounded queue was worse for the people standing in it than being told "not now" would have been.
+
+The order of that queue turned out to matter as much as its length. Plain first-come-first-served — the policy you get for free from a semaphore — **starved 2 of 8 clients completely**, because a refused caller backs off and loses its place to whoever was just served. Every summary metric looked healthy; only counting per client showed it. Findings 11 and 12.
+
+---
+
 ## Run it
 
 ```bash
@@ -288,6 +305,8 @@ Finding 10 says capacity is about 3 streams and the 4th listener doesn't get slo
 **5. The share served tracks capacity, and the shortfall is the price of backing off.** At 4 clients, 18 of 24 got through — exactly 3/4, the capacity share. At 8 clients it's 16 of 48, or 1/3, a little under the 3/8 the arithmetic predicts. The reason shows up in the door wait: admitted clients wait 2341 ms at 4 clients but only 616 ms at 8. Past a point, refused clients are all off backing off at the same time, so a freed slot sometimes has nobody standing at it. **Politeness costs a few percent of capacity** — worth knowing before tuning the retry hint, which is the knob that trades it against refusal churn.
 
 Both runs pass the drift check (1.01× and 1.00×), so this is a comparison of two servers, not a story about the machine getting busier between them.
+
+**It reproduces.** A later run on a busier machine (drift 1.11×, RTF 0.300 against 0.307) gave the same answer where it counts: zero stalls at every level, nobody starved, and 6 of 24 then 31 of 48 refused against 6 and 32 here. The tail was wider and the buffer margin wobbled — that's the noise showing up where noise should. The result isn't one lucky afternoon.
 
 ### 12. First-come-first-served starved two clients out of eight
 

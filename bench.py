@@ -35,14 +35,15 @@ THE CAPACITY NUMBER
 
 WHAT COUNTS AS BROKEN
     Not a big p95. `lead` going negative -- the client has played everything
-    it was given and the next chunk has not arrived, so the listener hears a
-    hole in the middle of a sentence. That is the only failure a listener can
-    detect, so it is reported as its own column rather than averaged into a
-    latency percentile.
+    it was given and the next chunk has not arrived, so the listener hears
+    silence in the middle of a sentence. That is a buffer underrun, and it is
+    the only failure a listener can detect, so it is reported as its own column
+    rather than averaged into a latency percentile.
 
-    A refusal is not broken either. Once the server has a door (server.py
-    design note 4) a request can end with no audio and no failure, so the
-    three outcomes -- served, served-with-a-gap, refused -- are counted
+    A refusal is not broken either. Once the server has admission control
+    (server.py design note 4) a request can end with no audio and no failure,
+    so the three outcomes -- served, served-with-an-underrun, refused -- are
+    counted
     separately. Rolling refusals into the latency table would let the tail
     improve every time the server turns someone away, which is exactly
     backwards.
@@ -58,6 +59,7 @@ import asyncio
 import json
 import statistics
 import time
+import urllib.request
 
 import websockets
 
@@ -78,10 +80,10 @@ class Result:
         self.audio_s = 0.0
         self.queue_ms = 0.0      # summed over chunks: time waiting for the slot
         self.gen_ms = 0.0        # summed over chunks: time inside the model
-        self.door_ms = 0.0       # waiting for admission, before anything is sent
+        self.admission_wait_ms = 0.0       # waiting for admission, before anything is sent
         self.min_lead_s = 0.0    # worst buffer margin seen; < 0 means a gap
         self.chunk_gen: list[float] = []
-        self.refused = False     # turned away at the door; no audio, not a failure
+        self.refused = False     # turned away at admission control; no audio, not a failure
         self.retry_after_s = 0.0
         self.client = 0          # which connection issued it, for the fairness check
 
@@ -105,12 +107,12 @@ async def one_request(ws, text: str) -> Result:
                 # the percentiles makes the tail look better the more the
                 # server turns away.
                 r.refused = True
-                r.door_ms = meta["waited_ms"]
+                r.admission_wait_ms = meta["waited_ms"]
                 r.total_ms = (time.perf_counter() - t0) * 1000
                 r.retry_after_s = meta["retry_after_s"]
                 return r
             if meta["type"] == "start":
-                r.door_ms = meta.get("door_ms", 0.0)
+                r.admission_wait_ms = meta.get("admission_wait_ms", 0.0)
             if meta["type"] == "end":
                 break
             if meta["type"] == "chunk":
@@ -214,8 +216,25 @@ def control_check(base: list[Result], control: list[Result]) -> bool:
     return ok
 
 
+def model_width(ws_url: str) -> int | None:
+    """How many model calls the server runs at once, or None if it won't say.
+
+    The capacity guard below compares the measured rate against 1/RTF, and that
+    line only bounds a server running one call at a time. Asking is better than
+    assuming: this may be pointed at a box configured differently from this one.
+    """
+    http = ws_url.replace("wss://", "https://").replace("ws://", "http://")
+    health = http.rsplit("/", 1)[0] + "/health"
+    try:
+        with urllib.request.urlopen(health, timeout=2) as response:
+            return int(json.load(response)["model_width"])
+    except Exception:
+        return None
+
+
 def report(levels: dict[int, list[Result]], wall: dict[int, float],
-           control: list[Result] | None = None) -> None:
+           control: list[Result] | None = None,
+           width: int | None = None) -> None:
     base = served(levels[min(levels)])
     if control:
         if control_check(levels[min(levels)], control):
@@ -253,30 +272,31 @@ def report(levels: dict[int, list[Result]], wall: dict[int, float],
     print("  turns more people away.")
 
     print(f"\n  Where the time goes\n")
-    print(f"  {'clients':>7} {'door p50':>9} {'queue p50':>10} {'gen p50':>9} "
-          f"{'min lead':>9} {'gaps':>7} {'refused':>8} {'throughput':>11}")
+    print(f"  {'clients':>7} {'admit p50':>10} {'queue p50':>10} {'gen p50':>9} "
+          f"{'min lead':>9} {'underrun':>9} {'refused':>8} {'xrealtime':>11}")
     print("  " + "-" * 80)
     for n in sorted(levels):
         rs = served(levels[n])
         refused = sum(1 for r in levels[n] if r.refused)
         audio = sum(r.audio_s for r in levels[n])
         if not rs:
-            print(f"  {n:>7} {'—':>9} {'—':>10} {'—':>9} {'—':>9} {'—':>7} "
-                  f"{refused:>3}/{len(levels[n]):<4} {0.0:>7.2f} a-s/s")
+            print(f"  {n:>7} {'—':>10} {'—':>10} {'—':>9} {'—':>9} {'—':>9} "
+                  f"{refused:>3}/{len(levels[n]):<4} {0.0:>7.2f}x")
             continue
-        d = pct([r.door_ms for r in rs], 0.50)
+        d = pct([r.admission_wait_ms for r in rs], 0.50)
         q = pct([r.queue_ms for r in rs], 0.50)
         g = pct([r.gen_ms for r in rs], 0.50)
-        gaps = sum(1 for r in rs if r.min_lead_s < 0)
-        print(f"  {n:>7} {d:>6.0f} ms {q:>7.0f} ms {g:>6.0f} ms "
-              f"{min(r.min_lead_s for r in rs):>+7.2f}s {gaps:>3}/{len(rs):<3} "
-              f"{refused:>3}/{len(levels[n]):<4} {audio / wall[n]:>7.2f} a-s/s")
-    print("\n  door is the wait for admission, before anything is sent; queue is")
-    print("  the wait for the model slot, after. gaps counts served requests")
-    print("  whose buffer ran dry — the only failure the listener can hear.")
-    print("  refused is the number turned away before a single sample went out.")
+        underruns = sum(1 for r in rs if r.min_lead_s < 0)
+        print(f"  {n:>7} {d:>7.0f} ms {q:>7.0f} ms {g:>6.0f} ms "
+              f"{min(r.min_lead_s for r in rs):>+7.2f}s {underruns:>4}/{len(rs):<4} "
+              f"{refused:>3}/{len(levels[n]):<4} {audio / wall[n]:>7.2f}x")
+    print("\n  admit is the wait for admission, before anything is sent; queue")
+    print("  is the wait for the model slot, after. underrun counts served")
+    print("  requests whose buffer ran dry — the only failure the listener can")
+    print("  hear. refused is the number turned away before a sample went out.")
+    print("  xrealtime is seconds of audio delivered per second of wall clock.")
 
-    # Fairness. A door that serves exactly its capacity looks identical in the
+    # Fairness. A server that admits exactly its capacity looks identical in the
     # totals whether it rotates fairly or serves the same three clients every
     # time and starves the rest -- "18 of 48 served" is the same number either
     # way. Only the per-client spread tells them apart, and starvation is a
@@ -302,7 +322,8 @@ def report(levels: dict[int, list[Result]], wall: dict[int, float],
     print(f"\n  Capacity\n")
     print(f"    single-client RTF          {rtf1:.3f}")
     print(f"    predicted realtime streams {cap:.1f}   (1 / RTF)")
-    print(f"    throughput ceiling         {peak:.2f} audio-seconds per second")
+    print(f"    measured ceiling           {peak:.2f}x realtime"
+          f"   (audio delivered per second of wall clock)")
     # Independent route to the same line: arithmetic says the queue starts
     # growing past 1/RTF streams; listening says it starts at the first level
     # where a buffer runs dry. They should land in the same place.
@@ -311,23 +332,32 @@ def report(levels: dict[int, list[Result]], wall: dict[int, float],
     broke = [n for n in sorted(levels)
              if any(r.min_lead_s < 0 for r in served(levels[n]))]
     if clean and broke:
-        print(f"    observed                   gap-free to {max(clean)}, "
-              f"gaps from {min(broke)}  ->  saturates between them")
+        print(f"    observed                   clean to {max(clean)}, "
+              f"underruns from {min(broke)}  ->  saturates between them")
     elif clean and not broke:
-        print(f"    observed                   gap-free at every level to "
+        print(f"    observed                   no underrun at any level to "
               f"{max(clean)}  ->  demand above capacity was refused, not queued")
-    # One model call at a time means the server cannot emit audio faster than
-    # one stream generates it. Measured throughput above 1/RTF is not a good
-    # result, it is a contradiction -- either the slot is not serialising or the
-    # RTF it is being compared against was measured on a busier machine.
+    # 1/RTF is the ceiling for one model call at a time, so it bounds the run
+    # only while the slot serialises. Width lifts it: several calls share the
+    # same cores, each slower than RTF on its own, and together they finish more
+    # audio than one of them could. Above width 1 a rate over 1/RTF is the
+    # expected result rather than a contradiction -- and a guard that kept
+    # comparing against the serialised line would cry wolf on every good run.
     if peak > cap * 1.05:
-        print(f"\n    CONTRADICTION: {peak:.2f} a-s/s exceeds the {cap:.2f} ceiling that")
-        print( "    one-call-at-a-time allows. Serialisation or the baseline is wrong;")
-        print( "    do not quote either number until this closes.")
-    print("\n  Throughput flattens at the ceiling no matter how many clients are")
-    print("  added; past it every extra client buys queue, not audio. That is the")
-    print("  line a batcher has to move, and moving it means more audio per")
-    print("  forward pass — not a smarter scheduler.")
+        if width is None or width <= 1:
+            print(f"\n    CONTRADICTION: {peak:.2f}x exceeds the {cap:.2f}x ceiling that")
+            print( "    one-call-at-a-time allows. Serialisation or the baseline is wrong;")
+            print( "    do not quote either number until this closes.")
+        else:
+            print(f"\n    Above the {cap:.2f}x one-call line, which is what width "
+                  f"{width} is for:")
+            print( "    1 / RTF bounds a single call, not the machine running several.")
+    print("\n  Delivered audio flattens at the ceiling no matter how many")
+    print("  clients are added; past it every extra client buys queue, not")
+    print("  audio. Width moves that ceiling by putting the idle part of the box")
+    print("  to work. Moving it any further takes more audio per forward pass —")
+    print("  a batcher, which per finding 7 this graph has no batch dimension")
+    print("  to give.")
 
 
 async def main() -> None:
@@ -368,7 +398,7 @@ async def main() -> None:
           flush=True)
     control, _ = await level(args.url, PARAGRAPH, ns[0], args.requests, args.warmup)
 
-    report(levels, wall, control)
+    report(levels, wall, control, model_width(args.url))
 
     total = sum(len(v) for v in levels.values())
     print(f"\n  {total} requests total. p95 at {min(len(v) for v in levels.values())} "

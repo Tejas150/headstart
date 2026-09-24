@@ -51,6 +51,9 @@ RUN mkdir -p /app/models \
     fi
 
 COPY server.py bench.py client.py ./
+# The console is served from /demo on the same origin as the socket, so the
+# image is the whole demo: run it, open the port, press play.
+COPY demo/ ./demo/
 
 # Not root. The server reads two files and writes nothing, so there is no
 # reason for it to be able to write anything either.

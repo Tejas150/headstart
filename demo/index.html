@@ -1,0 +1,1322 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>headstart — console</title>
+<link rel="icon" href="data:,">
+<!--
+  An instrument panel for a streaming TTS server.
+
+  Everything labelled (browser) is measured here, from the audio clock, without
+  reference to what the server said about itself. The server's claim is that the
+  listener's buffer never runs dry, and the only place that claim is true or
+  false is the listener. If these numbers and the server's disagree, that is a
+  finding.
+
+  The header is the server describing itself: what it measured its own capacity
+  to be, the fit those numbers come out of, and whether an operator has pinned
+  a number over the top of the measurement. Nothing there is a constant.
+
+  One file. No build step, no framework, no CDN.
+-->
+<style>
+  :root {
+    --bg: #0b0e12; --panel: #12161c; --sunk: #0e1218; --line: #1f2630;
+    --line-soft: #171d25;
+    --ink: #e3e9f2; --ink-2: #b3bfd0; --dim: #7d8a9d; --faint: #5a6675;
+    --good: #3fb98b; --warn: #d9a03f; --bad: #e0605e; --accent: #4d8ff0;
+    --gen: #5b8dd6; --play: #3fb98b; --grid: #1a212a;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Inter, sans-serif;
+    --h-head: 52px;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 13.5px/1.55 var(--sans);
+    -webkit-font-smoothing: antialiased;
+    display: grid; grid-template-rows: var(--h-head) minmax(0, 1fr) auto;
+    overflow: hidden;
+  }
+  .num, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  /* ============================================================ header bar */
+  header {
+    display: flex; align-items: center; gap: 22px;
+    padding: 0 18px; background: var(--panel);
+    border-bottom: 1px solid var(--line);
+    overflow-x: auto; scrollbar-width: none;
+  }
+  header::-webkit-scrollbar { display: none; }
+  .brand { font-weight: 650; font-size: 14px; letter-spacing: .015em;
+           white-space: nowrap; }
+  .brand span { color: var(--faint); font-weight: 400; margin-left: 7px; }
+
+  .chips { display: flex; align-items: center; gap: 20px; margin-left: auto; }
+  .chip { display: flex; flex-direction: column; line-height: 1.25;
+          white-space: nowrap; }
+  .chip .v { font-family: var(--mono); font-variant-numeric: tabular-nums;
+             font-size: 14px; font-weight: 500; }
+  .chip .k { font-size: 10px; color: var(--faint); letter-spacing: .06em;
+             text-transform: uppercase; }
+  .chip.wide .v { font-size: 12.5px; font-weight: 400; color: var(--ink-2); }
+
+  /* Chips carry an explanation on hover or keyboard focus. The underline is
+     the only affordance saying so -- dotted rather than solid so it does not
+     read as a link. */
+  .chip[data-tip] { cursor: help; }
+  .chip[data-tip] .k { border-bottom: 1px dotted #4a5561; padding-bottom: 1px; }
+  .chip[data-tip]:hover .k, .chip[data-tip]:focus-visible .k { color: var(--dim); }
+  .chip:focus { outline: none; }
+  .chip:focus-visible { outline: 1px solid var(--line); outline-offset: 3px;
+                        border-radius: 3px; }
+
+  /* One shared tooltip node, positioned from JS, living at the end of <body>.
+     It cannot be a ::after on the chip: `header` sets overflow-x:auto, which
+     computes overflow-y to auto as well, so anything drawn below the header
+     bar would be clipped by it. A fixed-position element takes the viewport as
+     its containing block and escapes that clip entirely. */
+  #tip {
+    position: fixed; z-index: 200; width: 320px; max-width: calc(100vw - 16px);
+    padding: 11px 13px; background: var(--sunk);
+    border: 1px solid var(--line); border-radius: 6px;
+    color: var(--dim); font-size: 11.5px; line-height: 1.6;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, .5);
+    opacity: 0; visibility: hidden; transform: translateY(-4px);
+    transition: opacity .12s ease, transform .12s ease, visibility .12s;
+    pointer-events: none;
+  }
+  #tip.on { opacity: 1; visibility: visible; transform: translateY(0); }
+  #tip b { color: var(--ink); font-family: var(--mono); font-weight: 550;
+           font-variant-numeric: tabular-nums; }
+
+  .pill { font-size: 10px; letter-spacing: .05em; text-transform: uppercase;
+          padding: 2px 6px; border-radius: 3px; border: 1px solid var(--line);
+          color: var(--dim); background: var(--sunk); }
+  .pill.live { color: var(--good); border-color: #1e4c3c; }
+  .pill.pinned { color: var(--warn); border-color: #4a3a1c; cursor: pointer; }
+  .pill.down { color: var(--bad); border-color: #4d2422; }
+  .pill.pinned:hover { background: #1c1710; }
+
+  /* ================================================================= main */
+  main {
+    display: grid; gap: 1px; background: var(--line-soft);
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    min-height: 0;
+  }
+  .panel {
+    background: var(--panel); display: flex; flex-direction: column;
+    min-height: 0; min-width: 0;
+  }
+  .phead { padding: 13px 18px 11px; border-bottom: 1px solid var(--line-soft); }
+  .phead h2 { font-size: 13px; font-weight: 650; margin: 0; letter-spacing: .01em; }
+  .phead p { margin: 3px 0 0; font-size: 12px; color: var(--dim); max-width: 62ch; }
+  .pbody {
+    flex: 1; min-height: 0; overflow: auto;
+    padding: 14px 18px 18px; display: flex; flex-direction: column; gap: 13px;
+  }
+  .pbody::-webkit-scrollbar { width: 9px; }
+  .pbody::-webkit-scrollbar-thumb { background: #202832; border-radius: 5px; }
+  .pbody::-webkit-scrollbar-track { background: transparent; }
+
+  /* ============================================================== controls */
+  textarea {
+    width: 100%; height: 82px; resize: vertical; background: var(--sunk);
+    color: var(--ink-2); border: 1px solid var(--line); border-radius: 5px;
+    padding: 9px 11px; font: 12.5px/1.55 var(--sans);
+  }
+  textarea:focus, select:focus, input:focus {
+    outline: none; border-color: #33465e;
+  }
+  .row { display: flex; gap: 9px; align-items: center; flex-wrap: wrap;
+         font-size: 12px; }
+  .row label { color: var(--faint); font-size: 11px; letter-spacing: .04em;
+               text-transform: uppercase; }
+  select, input[type=number] {
+    background: var(--sunk); color: var(--ink-2); border: 1px solid var(--line);
+    border-radius: 4px; padding: 5px 7px; font: 12px var(--sans);
+  }
+  input[type=number] { width: 58px; font-family: var(--mono); }
+  button {
+    background: #1a212a; color: var(--ink-2); border: 1px solid #29323e;
+    border-radius: 4px; padding: 6px 12px; font: 500 12px var(--sans);
+    cursor: pointer; transition: background .12s, border-color .12s;
+  }
+  button:hover:not(:disabled) { background: #222b36; border-color: #38434f; }
+  button:disabled { opacity: .35; cursor: default; }
+  button.primary { background: #23425f; border-color: #315a80; color: #dce8f6; }
+  button.primary:hover:not(:disabled) { background: #2a4f73; }
+
+  /* ============================================================== readouts */
+  .stats { display: flex; gap: 26px; flex-wrap: wrap; }
+  .stat .v { font-family: var(--mono); font-variant-numeric: tabular-nums;
+             font-size: 20px; line-height: 1.2; letter-spacing: -.015em; }
+  .stat .k { font-size: 10px; color: var(--faint); margin-top: 2px;
+             letter-spacing: .05em; text-transform: uppercase; }
+  .stat .k em { font-style: normal; opacity: .7; text-transform: none;
+                letter-spacing: 0; }
+
+  /* --- derivation strips: the arithmetic, shown rather than asserted --- */
+  .strip {
+    background: var(--sunk); border: 1px solid var(--line); border-radius: 5px;
+    padding: 9px 12px; font-size: 12px; display: flex; gap: 8px;
+    align-items: baseline; flex-wrap: wrap;
+  }
+  .strip + .strip { margin-top: -5px; }
+  .strip b { font-family: var(--mono); font-variant-numeric: tabular-nums;
+             font-weight: 550; color: var(--ink); }
+  .strip .op { color: var(--faint); }
+  .strip .tail { color: var(--faint); font-size: 11px; margin-left: auto;
+                 text-align: right; }
+  .strip .lbl { color: var(--dim); }
+
+  /* Prose that explains a strip sitting directly above it. Tucked under the
+     strip rather than floated beside it, so the number is read first and the
+     sentence is read as a gloss on that number. */
+  .expl { color: var(--dim); font-size: 11.5px; line-height: 1.6;
+          margin: -2px 0 0; max-width: 62ch; }
+  .expl b { color: var(--ink); font-family: var(--mono); font-weight: 550;
+            font-variant-numeric: tabular-nums; }
+
+  /* ================================================================ charts */
+  /* Shrinkable down to min-height, not rigid: the panels carry a variable
+     amount of prose above the chart, and a chart that refuses to give up its
+     last 20px puts a scrollbar on a panel that would otherwise fit. */
+  .chart { position: relative; flex: 1 1 230px; min-height: 205px; }
+  .chart canvas { position: absolute; inset: 0; display: block; }
+  .legend { display: flex; gap: 16px; font-size: 11px; color: var(--faint);
+            flex-wrap: wrap; align-items: center; margin-top: -4px; }
+  .legend i { display: inline-block; width: 11px; height: 3px; border-radius: 2px;
+              margin-right: 6px; vertical-align: middle; }
+  .legend .sw-gen { background: var(--gen); }
+  .legend .sw-play { background: var(--play); }
+  .legend .sw-buf { background: rgba(91,141,214,.30); height: 9px; }
+  .legend .sw-dead { background: var(--bad); height: 9px; }
+
+  /* =============================================================== compare */
+  .cmp { display: none; gap: 24px; font-size: 12px; flex-wrap: wrap;
+         align-items: baseline; border-top: 1px solid var(--line-soft);
+         padding-top: 12px; }
+  .cmp.on { display: flex; }
+  .cmp span { color: var(--faint); }
+  .cmp b { font-family: var(--mono); }
+  .cmp .note { flex-basis: 100%; color: var(--dim); font-size: 11.5px;
+               line-height: 1.5; }
+
+  /* ================================================================= table */
+  table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  th { text-align: left; color: var(--faint); font-weight: 500; font-size: 10px;
+       text-transform: uppercase; letter-spacing: .07em; padding: 0 10px 6px 0; }
+  td { padding: 5px 10px 5px 0; border-top: 1px solid var(--line-soft); }
+  td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  .verdict { padding-top: 11px; border-top: 1px solid var(--line-soft);
+             font-size: 12px; color: var(--dim); line-height: 1.55; }
+  .verdict b { color: var(--ink); font-weight: 600; }
+
+  /* ============================================================ wire drawer */
+  footer {
+    background: var(--panel); border-top: 1px solid var(--line);
+    display: flex; flex-direction: column; max-height: 34vh;
+  }
+  .wirehead {
+    display: flex; align-items: center; gap: 10px; padding: 7px 18px;
+    font-size: 11px; color: var(--dim); cursor: pointer; user-select: none;
+  }
+  .wirehead:hover { color: var(--ink-2); }
+  .wirehead .caret { color: var(--faint); font-size: 10px; width: 9px; }
+  .wirehead .hint { color: var(--faint); margin-left: auto; }
+  .wire {
+    font: 10.5px/1.5 var(--mono); color: #7f8b9c; background: var(--sunk);
+    border-top: 1px solid var(--line-soft); padding: 8px 18px 12px;
+    overflow: auto; white-space: pre; flex: 1; min-height: 0; height: 132px;
+  }
+  footer.closed .wire { display: none; }
+  .wire::-webkit-scrollbar { width: 9px; }
+  .wire::-webkit-scrollbar-thumb { background: #202832; border-radius: 5px; }
+
+  .ok { color: var(--good); } .bad { color: var(--bad); }
+  .warn { color: var(--warn); } .dim { color: var(--dim); }
+
+  /* ---- narrow: stack the panels and let the page scroll ---- */
+  @media (max-width: 1080px) {
+    html, body { height: auto; }
+    body { overflow: visible; grid-template-rows: var(--h-head) auto auto; }
+    header { position: sticky; top: 0; z-index: 5; }
+    main { grid-template-columns: minmax(0, 1fr); }
+    .panel, .pbody { min-height: 0; overflow: visible; }
+    .chart { flex: 0 0 auto; height: 300px; }
+    footer { max-height: none; }
+    .chips { gap: 14px; }
+  }
+</style>
+
+<header>
+  <div class="brand">headstart <span>console</span></div>
+
+  <!-- data-tip is filled in by paintHealth, not written here: every tooltip
+       quotes the live numbers back, so a static string would go stale the
+       moment the first request landed. -->
+  <div class="chips">
+    <div class="chip" id="chip-cap" tabindex="0"><div class="v" id="h-cap">—</div>
+      <div class="k">streams at once</div></div>
+    <div class="chip" id="chip-thru" tabindex="0"><div class="v" id="h-thru">—</div>
+      <div class="k">realtime speed</div></div>
+    <div class="chip" id="chip-fit" tabindex="0"><div class="v" id="h-fit">—</div>
+      <div class="k">live fit</div></div>
+    <div class="chip" id="chip-served" tabindex="0"><div class="v" id="h-served">—</div>
+      <div class="k">served / refused</div></div>
+    <span class="pill" id="serverline">connecting…</span>
+    <span class="pill pinned" id="unpin" style="display:none"
+          title="Hand capacity back to the measurement">pinned — unpin</span>
+  </div>
+</header>
+
+<main>
+
+  <!-- ========================================================== one stream -->
+  <section class="panel">
+    <div class="phead">
+      <h2>One stream</h2>
+      <p>How fast sound starts, and whether it ever stops. Generation has to stay
+        ahead of playback; where the two lines meet, the listener hears silence.</p>
+    </div>
+
+    <div class="pbody">
+      <textarea id="text">A listener cannot tell the difference between a server that is under load and a product that is simply broken, so the only thing that matters is whether sound arrives before they decide which one they are looking at. A wait reads as loading. A stutter does not. So this server refuses rather than accepting a stream it cannot finish.</textarea>
+
+      <div class="row">
+        <label>voice</label>
+        <select id="voice">
+          <option>af_sarah</option><option>af_bella</option><option>af_nicole</option>
+          <option>am_michael</option><option>am_adam</option><option>bf_emma</option>
+          <option>bm_george</option>
+        </select>
+        <!-- No lead-words field. The server derives it from its own cost model
+             and echoes back what it used; a type-in box here would override
+             that on every request, so the console would be displaying a number
+             it had just thrown away. Zero is still reachable, as one arm of the
+             comparison below. -->
+        <button class="primary" id="speak">Speak</button>
+        <button id="cmp">Compare lead split</button>
+        <button id="dl" disabled>Download .wav</button>
+      </div>
+
+      <div class="stats">
+        <div class="stat"><div class="v" id="s-ttfb">—</div>
+          <div class="k">first sound <em>(browser)</em></div></div>
+        <div class="stat"><div class="v" id="s-dead">—</div>
+          <div class="k">silence <em>(browser)</em></div></div>
+        <div class="stat"><div class="v" id="s-buf">—</div>
+          <div class="k">thinnest buffer <em>(browser)</em></div></div>
+        <div class="stat"><div class="v" id="s-rtf">—</div>
+          <div class="k">vs realtime <em>(server)</em></div></div>
+      </div>
+
+      <!-- The planner's own working, live. Chunks are sized against the buffer
+           and the queue, so both belong on screen next to the chart they
+           explain. min_chunk_s rises as the box gets busy: below it a chunk
+           costs more buffer than it earns, which is why cutting smaller to
+           catch up does not work. -->
+      <div class="strip">
+        <span class="lbl">shortest chunk worth generating</span><b id="d-minchunk">—</b>
+        <span class="op">·</span><span class="lbl">queue wait</span><b id="d-queue">—</b>
+        <span class="op">·</span><span class="lbl">lead words</span><b id="d-lead">—</b>
+        <span class="tail" id="d-sustain">—</span>
+      </div>
+
+      <div class="chart">
+        <canvas id="c-stream"></canvas>
+      </div>
+      <div class="legend">
+        <span><i class="sw-gen"></i>audio generated</span>
+        <span><i class="sw-play"></i>audio played</span>
+        <span><i class="sw-buf"></i>buffer in hand</span>
+        <span><i class="sw-dead"></i>silence</span>
+      </div>
+
+      <div class="cmp" id="cmpbox">
+        <div><span id="cmpSplitLbl">split →</span> <b id="cmpSplit">—</b></div>
+        <div><span>no split →</span> <b id="cmpNone">—</b></div>
+        <div><span>difference</span> <b id="cmpd">—</b></div>
+        <div class="note" id="cmpnote"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================= admission control -->
+  <section class="panel">
+    <div class="phead">
+      <h2>Admission control</h2>
+      <p id="admission-lede">The server admits as many streams as it has measured it
+        can finish. The next caller is refused, not queued behind them.</p>
+    </div>
+
+    <div class="pbody">
+      <div class="row">
+        <button class="primary" id="load">Start 8 callers</button>
+        <label>capacity</label>
+        <!-- Rebuilt by paintHealth: the list runs 1 .. measured+1, and the
+             measurement moves, so a list written here would go stale. -->
+        <select id="limit"></select>
+        <label>listen to</label>
+        <select id="listen">
+          <option value="0">caller 1</option><option value="1">caller 2</option>
+          <option value="2">caller 3</option><option value="3">caller 4</option>
+          <option value="4">caller 5</option><option value="5">caller 6</option>
+          <option value="6">caller 7</option><option value="7">caller 8</option>
+        </select>
+      </div>
+
+      <!-- Where the capacity number comes from. Measured speed, not the
+           asymptote: 1/slope is the marginal cost of one more second of speech
+           and therefore the capacity of an infinitely long chunk, and this
+           server serves short ones on purpose. The two are shown together
+           because the gap between them is the per-chunk fixed cost. -->
+      <div class="strip">
+        <span class="lbl">makes audio at</span><b id="d-thru">—</b>
+        <span class="op">realtime → admits</span><b id="d-cap">—</b>
+        <span class="tail" id="d-asym">—</span>
+      </div>
+
+      <!-- The strip above shows the arithmetic; this says where its inputs come
+           from. Repainted every poll, because every number quoted in it moves. -->
+      <p class="expl" id="d-how">—</p>
+
+      <!-- The refusal deadline is recomputed from how long a slot has actually
+           been held, so it is polled rather than read once. -->
+      <div class="strip">
+        <span class="lbl">a slot is held</span><b id="d-hold">—</b>
+        <span class="op">÷</span><b id="d-slots">—</b><span class="op">slots</span>
+        <span class="op">= refuse after</span><b id="d-wait">—</b>
+        <span class="tail" id="d-n">no traffic yet</span>
+      </div>
+
+      <div class="chart">
+        <canvas id="c-load"></canvas>
+      </div>
+      <div class="legend">
+        <span><i class="sw-play"></i>playing cleanly</span>
+        <span><i class="sw-dead"></i>broken up</span>
+        <span><i style="background:#3a444f"></i>waiting</span>
+        <span class="dim">✕ refused</span>
+        <span class="dim" style="margin-left:auto">slot reorders <b class="num"
+          id="d-preempt">0</b></span>
+      </div>
+
+      <table id="grid">
+        <thead><tr><th>caller</th><th>outcome</th><th>first sound</th>
+          <th>silence</th><th>detail</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="verdict" id="verdict"></div>
+    </div>
+  </section>
+
+</main>
+
+<footer id="wirebar">
+  <div class="wirehead" id="wiretoggle">
+    <span class="caret" id="wirecaret">▾</span>
+    <span>Wire — every frame the server sent, as it arrived</span>
+    <span class="hint" id="wirehint">click to collapse</span>
+  </div>
+  <div class="wire" id="wire"></div>
+</footer>
+
+<div id="tip" role="tooltip" aria-hidden="true"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const SR = 24000;
+const START_PAD = 0.020;          // scheduling headroom before the first sample
+const WS_URL = (location.protocol === "https:" ? "wss://" : "ws://")
+             + location.host + "/tts";
+
+let CTX = null;
+const audio = () => (CTX = CTX || new (window.AudioContext || window.webkitAudioContext)());
+
+function log(line) {
+  const w = $("wire");
+  w.textContent += line + "\n";
+  w.scrollTop = w.scrollHeight;
+}
+
+$("wiretoggle").onclick = () => {
+  const bar = $("wirebar");
+  const closed = bar.classList.toggle("closed");
+  $("wirecaret").textContent = closed ? "▸" : "▾";
+  $("wirehint").textContent = closed ? "click to open" : "click to collapse";
+  requestAnimationFrame(() => { drawStream(); drawLoad(); });
+};
+
+/* ============================================================== the player
+   Raw PCM cannot be appended to an <audio> element and come out gapless. Each
+   chunk is decoded into an AudioBuffer and scheduled at an explicit time on the
+   AudioContext clock, so consecutive chunks abut sample for sample.
+
+   That cursor is also the measurement. `cursor - currentTime` is audio in hand
+   that has not been heard yet. If the cursor is already behind the clock when a
+   chunk arrives, the sound card ran dry in between, and that interval was
+   silence the listener actually heard.
+*/
+class Player {
+  constructor(gainValue = 1) {
+    const c = audio();
+    this.gain = c.createGain();
+    this.gain.gain.value = gainValue;
+    this.gain.connect(c.destination);
+    this.cursor = null;       // context time the next chunk starts at
+    this.startedAt = null;    // context time the first sample is due
+    this.receivedS = 0;
+    this.silenceS = 0;
+    this.underruns = 0;
+    this.underrunSpans = [];          // [{from, to}] in wall seconds, for the chart
+    this.ended = false;       // the server has stopped sending
+    this.pcm = [];
+    this.t0 = c.currentTime;  // for wall-clock plotting
+  }
+
+  push(arrayBuffer) {
+    const c = audio();
+    const i16 = new Int16Array(arrayBuffer);
+    const f32 = new Float32Array(i16.length);
+    for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
+    const buf = c.createBuffer(1, f32.length, SR);
+    buf.copyToChannel(f32, 0);
+    this.pcm.push(i16);
+
+    const now = c.currentTime;
+    if (this.cursor === null) {
+      this.cursor = now + START_PAD;
+      this.startedAt = this.cursor;
+    } else if (this.cursor < now) {
+      this.silenceS += now - this.cursor;
+      this.underruns += 1;
+      this.underrunSpans.push({ from: this.cursor - this.t0, to: now - this.t0 });
+      this.cursor = now;
+    }
+    const src = c.createBufferSource();
+    src.buffer = buf;
+    src.connect(this.gain);
+    src.start(this.cursor);
+    this.cursor += buf.duration;
+    this.receivedS += buf.duration;
+  }
+
+  get playedS() {
+    if (this.cursor === null) return 0;
+    return this.receivedS - Math.max(0, this.cursor - audio().currentTime);
+  }
+  get bufferS() {
+    if (this.cursor === null) return 0;
+    return Math.max(0, this.cursor - audio().currentTime);
+  }
+  get elapsedS() { return audio().currentTime - this.t0; }
+  // Drained means playback has caught up to everything scheduled. On its own
+  // that is NOT the end of the stream -- it is also exactly what a starve looks
+  // like, since a buffer that has run dry has by definition been caught up
+  // with. Treating the two as the same thing stops the chart at the first
+  // underrun,
+  // which is the one moment it exists to show. So the stream is over only when
+  // the sender has said so and the audio has drained.
+  get drained() { return this.cursor !== null && audio().currentTime >= this.cursor; }
+  get done() { return this.ended && this.drained; }
+  ttfbMs(fromCtxTime) { return (this.startedAt - fromCtxTime) * 1000; }
+  mute(on) { this.gain.gain.value = on ? 0 : 1; }
+}
+
+/* ------------------------------------------------------------------ wav out */
+function toWav(chunks) {
+  let n = 0;
+  for (const c of chunks) n += c.length;
+  const out = new DataView(new ArrayBuffer(44 + n * 2));
+  const ascii = (o, s) => { for (let i = 0; i < s.length; i++) out.setUint8(o + i, s.charCodeAt(i)); };
+  ascii(0, "RIFF"); out.setUint32(4, 36 + n * 2, true); ascii(8, "WAVEfmt ");
+  out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 1, true);
+  out.setUint32(24, SR, true); out.setUint32(28, SR * 2, true);
+  out.setUint16(32, 2, true); out.setUint16(34, 16, true);
+  ascii(36, "data"); out.setUint32(40, n * 2, true);
+  let o = 44;
+  for (const c of chunks) for (let i = 0; i < c.length; i++, o += 2) out.setInt16(o, c[i], true);
+  return new Blob([out], { type: "audio/wav" });
+}
+
+/* -------------------------------------------------------------- one request */
+function request({ text, voice, lead, player, onFrame }) {
+  return new Promise((resolve) => {
+    const ws = new WebSocket(WS_URL);
+    ws.binaryType = "arraybuffer";
+    const out = { outcome: null, server: null, busy: null };
+    let pending = null;
+    ws.onopen = () => ws.send(JSON.stringify({ text, voice, lead_words: lead }));
+    ws.onmessage = (ev) => {
+      if (typeof ev.data !== "string") {
+        if (pending) { player.push(ev.data); pending = null; }
+        return;
+      }
+      const f = JSON.parse(ev.data);
+      if (onFrame) onFrame(f);
+      if (f.type === "busy") { out.outcome = "busy"; out.busy = f; ws.close(); }
+      else if (f.type === "chunk") pending = f;
+      else if (f.type === "end") { out.outcome = "served"; out.server = f; ws.close(); }
+    };
+    // Set here rather than at the call site so every caller gets it: until the
+    // socket closes, a caught-up buffer is a starve, not an ending.
+    ws.onclose = () => { if (player) player.ended = true; resolve(out); };
+    ws.onerror = () => {
+      if (player) player.ended = true;
+      out.outcome = out.outcome || "error"; resolve(out);
+    };
+  });
+}
+
+/* ============================================================ chart helpers
+   The canvas is absolutely positioned inside a flex-grown box, so the box
+   decides the size and the canvas follows. Sizing the box from the canvas
+   instead would make the two chase each other on every resize.
+*/
+function fitCanvas(cv) {
+  const dpr = window.devicePixelRatio || 1;
+  const box = cv.parentElement;
+  const w = Math.max(260, Math.round(box.clientWidth));
+  const h = Math.max(190, Math.round(box.clientHeight));
+  if (cv._w === w && cv._h === h && cv._dpr === dpr) return cv.getContext("2d");
+  cv._w = w; cv._h = h; cv._dpr = dpr;
+  cv.width = Math.round(w * dpr);
+  cv.height = Math.round(h * dpr);
+  cv.style.width = w + "px";
+  cv.style.height = h + "px";
+  const g = cv.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return g;
+}
+const niceMax = (v, step) => Math.max(step, Math.ceil(v / step) * step);
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+function axes(g, W, H, pad, xMax, yMax, xLabel, yLabel) {
+  g.strokeStyle = css("--grid"); g.lineWidth = 1;
+  g.fillStyle = css("--faint");
+  g.font = "10px ui-monospace, Menlo, monospace";
+  const xs = xMax <= 12 ? 2 : xMax <= 30 ? 5 : 10;
+  const ys = yMax <= 12 ? 2 : yMax <= 30 ? 5 : 10;
+  g.textAlign = "center"; g.textBaseline = "top";
+  for (let t = 0; t <= xMax + 1e-6; t += xs) {
+    const x = Math.round(pad.l + (W - pad.l - pad.r) * (t / xMax)) + .5;
+    g.beginPath(); g.moveTo(x, pad.t); g.lineTo(x, H - pad.b); g.stroke();
+    g.fillText(t + "s", x, H - pad.b + 6);
+  }
+  g.textAlign = "right"; g.textBaseline = "middle";
+  for (let v = 0; v <= yMax + 1e-6; v += ys) {
+    const y = Math.round(H - pad.b - (H - pad.t - pad.b) * (v / yMax)) + .5;
+    g.beginPath(); g.moveTo(pad.l, y); g.lineTo(W - pad.r, y); g.stroke();
+    g.fillText(v + "s", pad.l - 7, y);
+  }
+  g.textAlign = "left"; g.textBaseline = "top";
+  g.fillText(xLabel, pad.l, H - pad.b + 20);
+  g.save(); g.translate(11, pad.t); g.rotate(-Math.PI / 2);
+  g.textAlign = "right"; g.fillText(yLabel, 0, 0); g.restore();
+}
+
+/* ====================================================== chart: one stream
+   x is wall-clock seconds since the request; y is seconds of audio. The
+   generated line is a staircase that jumps when a chunk lands. The played line
+   rises at 45 degrees, because playback consumes one second of audio per second
+   of wall clock. The vertical distance between them is the buffer. Where they
+   meet, the buffer is empty and the listener is hearing silence.
+*/
+const streamTrace = { gen: [], play: [], underrunSpans: [] };
+
+function drawStream() {
+  const cv = $("c-stream");
+  const g = fitCanvas(cv);
+  const W = cv._w, H = cv._h, pad = { l: 46, r: 12, t: 12, b: 34 };
+  g.clearRect(0, 0, W, H);
+
+  const gen = streamTrace.gen, play = streamTrace.play;
+  const xMax = niceMax(Math.max(2, gen.length ? gen[gen.length - 1][0] : 0), 5);
+  const yMax = niceMax(Math.max(2, gen.length ? gen[gen.length - 1][1] : 0), 5);
+  axes(g, W, H, pad, xMax, yMax, "wall clock", "seconds of audio");
+  if (!gen.length) return;
+
+  const X = (t) => pad.l + (W - pad.l - pad.r) * (t / xMax);
+  const Y = (v) => H - pad.b - (H - pad.t - pad.b) * (v / yMax);
+
+  // buffer band between the two lines
+  g.beginPath();
+  g.moveTo(X(gen[0][0]), Y(gen[0][1]));
+  for (const [t, v] of gen) { g.lineTo(X(t), Y(v)); }
+  for (let i = play.length - 1; i >= 0; i--) g.lineTo(X(play[i][0]), Y(play[i][1]));
+  g.closePath();
+  g.fillStyle = "rgba(91,141,214,.20)"; g.fill();
+
+  // dead-air bands
+  g.fillStyle = "rgba(224,96,94,.28)";
+  for (const h of streamTrace.underrunSpans) {
+    g.fillRect(X(h.from), pad.t, Math.max(2, X(h.to) - X(h.from)), H - pad.t - pad.b);
+  }
+
+  const line = (pts, colour, stepped) => {
+    g.beginPath(); g.lineWidth = 2; g.strokeStyle = colour;
+    g.lineJoin = "round";
+    pts.forEach(([t, v], i) => {
+      if (i === 0) { g.moveTo(X(t), Y(v)); return; }
+      if (stepped) g.lineTo(X(t), Y(pts[i - 1][1]));
+      g.lineTo(X(t), Y(v));
+    });
+    g.stroke();
+  };
+  line(gen, css("--gen"), true);
+  line(play, css("--play"), false);
+}
+
+/* ==================================================== chart: admission control, lanes
+   Top strip is how many streams are being served at once, against the limit.
+   Below it, one row per caller: waiting, then served, with the stretches where
+   that listener heard silence marked in red. Refused callers stop at the ✕.
+*/
+const loadTrace = { t0: 0, inflight: [], callers: [], limit: 2, running: false };
+
+function drawLoad() {
+  const cv = $("c-load");
+  const g = fitCanvas(cv);
+  const W = cv._w, H = cv._h;
+  g.clearRect(0, 0, W, H);
+
+  const now = loadTrace.running ? (audio().currentTime - loadTrace.t0) : loadTrace.endT || 0;
+  const xMax = niceMax(Math.max(8, now), 5);
+  const padL = 62, padR = 12;
+  const X = (t) => padL + (W - padL - padR) * (Math.max(0, t) / xMax);
+
+  // ---- top strip: concurrent streams -------------------------------------
+  const stripTop = 14;
+  const stripH = clamp(Math.round(H * 0.24), 56, 104);
+  const maxN = Math.max(4, loadTrace.limit === 0 ? 8 : loadTrace.limit + 1);
+  const SY = (n) => stripTop + stripH - (stripH * (n / maxN));
+
+  g.strokeStyle = css("--grid"); g.lineWidth = 1;
+  g.fillStyle = css("--faint"); g.font = "10px ui-monospace, Menlo, monospace";
+  g.textAlign = "right"; g.textBaseline = "middle";
+  for (let n = 0; n <= maxN; n += (maxN > 5 ? 2 : 1)) {
+    const y = Math.round(SY(n)) + .5;
+    g.beginPath(); g.moveTo(padL, y); g.lineTo(W - padR, y); g.stroke();
+    g.fillText(n, padL - 7, y);
+  }
+  if (loadTrace.limit > 0) {
+    g.strokeStyle = css("--warn"); g.setLineDash([4, 4]); g.lineWidth = 1.5;
+    const y = Math.round(SY(loadTrace.limit)) + .5;
+    g.beginPath(); g.moveTo(padL, y); g.lineTo(W - padR, y); g.stroke();
+    g.setLineDash([]);
+    g.fillStyle = css("--warn"); g.textAlign = "left"; g.textBaseline = "bottom";
+    g.fillText("capacity " + loadTrace.limit, padL + 5, y - 3);
+  }
+  if (loadTrace.inflight.length) {
+    g.beginPath(); g.lineWidth = 2; g.strokeStyle = css("--gen");
+    loadTrace.inflight.forEach(([t, n], i) => {
+      if (i === 0) { g.moveTo(X(t), SY(n)); return; }
+      g.lineTo(X(t), SY(loadTrace.inflight[i - 1][1]));
+      g.lineTo(X(t), SY(n));
+    });
+    g.lineTo(X(now), SY(loadTrace.inflight[loadTrace.inflight.length - 1][1]));
+    g.stroke();
+  }
+  g.fillStyle = css("--faint"); g.textAlign = "left"; g.textBaseline = "top";
+  g.fillText("streams being served at once", padL, stripTop - 4);
+
+  // ---- caller rows --------------------------------------------------------
+  const rowTop = stripTop + stripH + 30;
+  const rows = loadTrace.callers.length || 8;
+  const rowH = clamp((H - rowTop - 28) / rows, 13, 34);
+  const barH = Math.max(7, rowH - 9);
+
+  g.font = "10.5px ui-monospace, Menlo, monospace";
+  for (let i = 0; i < rows; i++) {
+    const c = loadTrace.callers[i];
+    const y = rowTop + i * rowH;
+    g.fillStyle = css("--faint"); g.textAlign = "right"; g.textBaseline = "middle";
+    g.fillText("caller " + (i + 1), padL - 8, y + barH / 2);
+    g.fillStyle = "#161b22";
+    g.fillRect(padL, y, W - padL - padR, barH);
+    if (!c) continue;
+
+    const end = c.endT != null ? c.endT : now;
+    // waiting at admission
+    if (c.admitT != null && c.admitT > c.startT) {
+      g.fillStyle = "#3a444f";
+      g.fillRect(X(c.startT), y, Math.max(1, X(c.admitT) - X(c.startT)), barH);
+    }
+    if (c.outcome === "busy") {
+      const w = Math.max(1, X(c.endT) - X(c.startT));
+      g.fillStyle = "#3a444f"; g.fillRect(X(c.startT), y, w, barH);
+      g.fillStyle = css("--bad"); g.textAlign = "left"; g.textBaseline = "middle";
+      g.fillText("✕ refused", X(c.endT) + 6, y + barH / 2);
+      continue;
+    }
+    const from = c.admitT != null ? c.admitT : c.startT;
+    g.fillStyle = css("--play");
+    g.fillRect(X(from), y, Math.max(1, X(end) - X(from)), barH);
+    g.fillStyle = css("--bad");
+    for (const h of (c.player ? c.player.underrunSpans : [])) {
+      const a = X(c.startT + h.from), b = X(c.startT + h.to);
+      g.fillRect(a, y, Math.max(2, b - a), barH);
+    }
+  }
+
+  // x axis under the rows
+  const axisY = rowTop + rows * rowH + 4;
+  g.strokeStyle = css("--grid"); g.fillStyle = css("--faint");
+  g.textAlign = "center"; g.textBaseline = "top";
+  const xs = xMax <= 12 ? 2 : xMax <= 30 ? 5 : 10;
+  for (let t = 0; t <= xMax + 1e-6; t += xs) {
+    const x = Math.round(X(t)) + .5;
+    g.beginPath(); g.moveTo(x, rowTop - 6); g.lineTo(x, axisY); g.stroke();
+    g.fillText(t + "s", x, axisY + 4);
+  }
+}
+
+/* ================================================================ one stream */
+let single = null, singleFromCtx = 0, lastPcm = null, streamRaf = null;
+
+function tickStream() {
+  streamRaf = null;
+  if (!single) return;
+  const t = single.elapsedS;
+  streamTrace.gen.push([t, single.receivedS]);
+  streamTrace.play.push([t, Math.max(0, single.playedS)]);
+  streamTrace.underrunSpans = single.underrunSpans;
+  // The thinnest the buffer ever got, not what is in it now. The instantaneous
+  // value ends at zero on every healthy stream -- playback catches up when the
+  // sender stops -- so it reads as a failure at exactly the moment it isn't
+  // one. The minimum is the number with an argument in it: how close this
+  // stream came to running dry.
+  // Sampled only while the listener is hearing audio AND more is still coming.
+  // Before the first sample there is no buffer to run dry, so the pad in front
+  // of chunk 0 would read as the thinnest moment; after the last chunk lands
+  // the buffer drains to zero on every healthy stream, which is the stream
+  // ending rather than a stream in trouble. Between those two, thin means thin.
+  if (single.startedAt !== null && audio().currentTime > single.startedAt
+      && !single.ended) {
+    single.minBufferS = Math.min(
+      single.minBufferS === undefined ? Infinity : single.minBufferS,
+      single.bufferS);
+  }
+  $("s-buf").textContent = single.minBufferS === undefined
+    ? "—" : single.minBufferS.toFixed(2) + " s";
+  $("s-dead").textContent = single.underruns === 0
+    ? "0" : Math.round(single.silenceS * 1000) + " ms";
+  $("s-dead").className = "v " + (single.underruns === 0 ? "ok" : "bad");
+  drawStream();
+  if (!single.done || single.cursor === null) streamRaf = requestAnimationFrame(tickStream);
+}
+
+// What chunk 0 was actually sized to on the last run, read off the server's
+// `start` frame rather than off /health -- the fit moves between polls, and the
+// comparison below has to name the number that run really used.
+let lastLeadUsed = null;
+
+async function speak(lead) {
+  audio();
+  for (const b of ["speak", "cmp", "load"]) $(b).disabled = true;
+  $("s-ttfb").textContent = "…"; $("s-ttfb").className = "v";
+  $("s-rtf").textContent = "—";
+  streamTrace.gen = []; streamTrace.play = []; streamTrace.underrunSpans = [];
+
+  single = new Player(1);
+  // Started before the socket opens, so this includes connecting and any time
+  // spent waiting for admission. Measuring from the `start` frame would exclude
+  // both and flatter the number.
+  singleFromCtx = audio().currentTime;
+  if (!streamRaf) tickStream();
+
+  const res = await request({
+    text: $("text").value, voice: $("voice").value, lead, player: single,
+    onFrame: (f) => {
+      if (f.type === "start") lastLeadUsed = f.lead_words;
+      log(JSON.stringify(f));
+    },
+  });
+
+  if (res.outcome === "busy") {
+    $("s-ttfb").textContent = "refused"; $("s-ttfb").className = "v warn";
+  } else if (res.server) {
+    $("s-ttfb").textContent = Math.round(single.ttfbMs(singleFromCtx)) + " ms";
+    $("s-rtf").textContent = res.server.rtf;
+    lastPcm = single.pcm; $("dl").disabled = false;
+  }
+  for (const b of ["speak", "cmp", "load"]) $(b).disabled = false;
+  return res.outcome === "served" ? single.ttfbMs(singleFromCtx) : null;
+}
+
+// null, not a number: the server fills it in from its own cost model.
+$("speak").onclick = () => speak(null);
+
+function firstSentenceWords() {
+  const m = $("text").value.trim().match(/^[^.!?]*[.!?]?/);
+  return (m ? m[0] : "").split(/\s+/).filter(Boolean).length;
+}
+
+$("cmp").onclick = async () => {
+  $("cmpbox").classList.add("on");
+  $("cmpSplit").textContent = $("cmpNone").textContent
+    = $("cmpd").textContent = "…";
+  $("cmpnote").textContent = "";
+  const words = firstSentenceWords();
+
+  // The first arm sends no lead_words at all, so the server plans this request
+  // the way it plans every other one. What it picked comes back on the start
+  // frame, and it is read before the second run overwrites it.
+  const withLead = await speak(null);
+  const used = lastLeadUsed;
+  const without = await speak(0);
+
+  $("cmpSplitLbl").textContent =
+    "split at " + (used === null ? "—" : used) + " words →";
+  $("cmpSplit").textContent =
+    withLead === null ? "refused" : Math.round(withLead) + " ms";
+  $("cmpNone").textContent =
+    without === null ? "refused" : Math.round(without) + " ms";
+
+  if (withLead && without) {
+    $("cmpd").textContent = (without / withLead).toFixed(2) + "× sooner";
+    $("cmpd").className = "ok";
+    // The chunker never splits mid-sentence, so the lever only fires when the
+    // opening sentence runs longer than the lead budget. Below that both arms
+    // produce the same plan, and saying so is the honest reading.
+    $("cmpnote").textContent = (used && words <= used)
+      ? "The opening sentence is " + words + " words and the server sized "
+        + "chunk 0 at " + used + ", so there was nothing to cut. It will not "
+        + "split mid-sentence, so both runs got the same plan. The lever is "
+        + "the length of the first thing the listener waits on, not the length "
+        + "of the clip."
+      : "The opening sentence is " + words + " words. Without the split the "
+        + "listener waits for all of it; with it they wait for " + used + ". "
+        + "That is paid for out of buffer depth, not out of speed — "
+        + "starting sooner leaves less finished audio in hand when the box "
+        + "gets busy.";
+  }
+};
+
+$("dl").onclick = () => {
+  const url = URL.createObjectURL(toWav(lastPcm));
+  const a = document.createElement("a");
+  a.href = url; a.download = "headstart.wav"; a.click();
+  URL.revokeObjectURL(url);
+};
+
+/* ======================================================= admission control */
+let loadRaf = null;
+
+function tickLoad() {
+  loadRaf = null;
+  drawLoad();
+  if (loadTrace.running) loadRaf = requestAnimationFrame(tickLoad);
+}
+
+// -1 hands the capacity back to the measurement rather than pinning a number
+// on it. Pinning by default would be this page overruling what it is showing.
+async function setAdmission(capacity) {
+  const r = await fetch("/admission?capacity=" + capacity, { method: "POST" });
+  return r.json();
+}
+
+$("unpin").onclick = async () => { await setAdmission(-1); pollHealth(); };
+
+$("load").onclick = async () => {
+  audio();
+  for (const b of ["speak", "cmp", "load"]) $(b).disabled = true;
+
+  // The measurement is read here rather than when the list was painted, so a
+  // refit between the two does not leave the run pinned to a stale number.
+  const measured = health.derived_capacity || 2;
+  const want = parseInt($("limit").value, 10);
+  let limit = (await setAdmission(want)).capacity;
+  pollHealth();
+
+  const tbody = $("grid").querySelector("tbody");
+  tbody.innerHTML = "";
+  $("verdict").textContent = "";
+
+  loadTrace.t0 = audio().currentTime;
+  loadTrace.limit = limit;
+  loadTrace.inflight = [[0, 0]];
+  loadTrace.callers = [];
+  loadTrace.running = true;
+  loadTrace.endT = null;
+  let inflight = 0;
+  const bump = (d) => {
+    inflight += d;
+    loadTrace.inflight.push([audio().currentTime - loadTrace.t0, inflight]);
+  };
+
+  const text = $("text").value;
+  const jobs = [];
+  for (let i = 0; i < 8; i++) {
+    const p = new Player(i === parseInt($("listen").value, 10) ? 1 : 0);
+    const c = { startT: audio().currentTime - loadTrace.t0, admitT: null,
+                endT: null, outcome: null, player: p, ttfb: null, server: null,
+                busy: null };
+    loadTrace.callers.push(c);
+    jobs.push(request({
+      // Same as Speak: no lead_words, so all eight callers are planned the way
+      // the server plans real traffic. Pinning it here would make this demo
+      // measure a configuration nobody runs.
+      text, voice: $("voice").value, lead: null, player: p,
+      onFrame: (f) => {
+        if (f.type === "start") {
+          c.admitT = audio().currentTime - loadTrace.t0;
+          c.ttfb = null; bump(+1);
+        }
+      },
+    }).then((res) => {
+      c.endT = audio().currentTime - loadTrace.t0;
+      c.outcome = res.outcome;
+      c.server = res.server; c.busy = res.busy;
+      if (res.outcome === "served") {
+        bump(-1);
+        c.ttfb = p.startedAt != null
+          ? (p.startedAt - (loadTrace.t0 + c.startT)) * 1000 : null;
+      }
+      return c;
+    }));
+  }
+  if (!loadRaf) tickLoad();
+
+  const done = await Promise.all(jobs);
+  // Let the audio finish draining before the chart freezes.
+  const tail = Math.max(...done.map((c) => c.player.cursor || 0), audio().currentTime);
+  await new Promise((r) => setTimeout(r, Math.max(0, (tail - audio().currentTime)) * 1000 + 150));
+  loadTrace.running = false;
+  loadTrace.endT = audio().currentTime - loadTrace.t0;
+  drawLoad();
+
+  done.forEach((c, i) => {
+    const served = c.outcome === "served";
+    const broke = served && c.player.underruns > 0;
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      "<td>" + (i + 1) + "</td>" +
+      "<td class='" + (served ? (broke ? "bad" : "ok") : "warn") + "'>" +
+        (served ? (broke ? "broke up" : "clean") : "refused") + "</td>" +
+      "<td class='num'>" + (c.ttfb != null ? Math.round(c.ttfb) + " ms" : "—") + "</td>" +
+      "<td class='num'>" + (served
+        ? (c.player.underruns ? Math.round(c.player.silenceS * 1000) + " ms" : "0") : "—") + "</td>" +
+      "<td class='dim'>" + (served
+        ? c.player.receivedS.toFixed(1) + " s of audio"
+        : "waited " + ((c.busy ? c.busy.waited_ms : 0) / 1000).toFixed(1)
+          + " s, then told to retry") + "</td>";
+    tbody.appendChild(tr);
+  });
+
+  const served = done.filter((c) => c.outcome === "served");
+  const broke = served.filter((c) => c.player.underruns > 0);
+  const refused = done.length - served.length;
+  const deadMs = Math.round(served.reduce((a, c) => a + c.player.silenceS, 0) * 1000);
+  const head = "<b>" + served.length + " served, " + refused + " refused, "
+             + broke.length + " broke up" + (deadMs ? " — " + deadMs
+             + " ms of silence in total" : "") + ".</b> ";
+
+  // Four verdicts, because the setting is making a different argument
+  // depending on where it sits relative to the measurement, and one sentence
+  // would only fit one of them. Which arm this is has to be decided against
+  // the measurement as it read when the run started, not against a fixed
+  // option, now that every level between 1 and measured+1 is reachable.
+  $("verdict").innerHTML = head + (
+    limit === 0
+      ? "Nobody was refused, and that is the problem: every listener was "
+        + "promised audio and then heard it stop. The queue was worse for the "
+        + "people standing in it than being turned away would have been."
+    : limit > measured
+      ? "This is capacity set " + (limit - measured) + " above what the box "
+        + "measured for itself. The extra stream does not get worse audio — it "
+        + "breaks up every stream on the box, including the ones that were "
+        + "already speaking. That is why the measured number is rounded down."
+    : limit < measured
+      ? "This is capacity held " + (measured - limit) + " below the "
+        + "measurement, so the box was never asked for everything it had. "
+        + refused + " callers were turned away that the server believes it "
+        + "could have finished — which is what buying margin costs, and it is "
+        + "paid in refusals rather than in broken audio. Run it at " + measured
+        + " to see where the line actually is."
+    : broke.length === 0
+      ? "The refusals came before any audio was sent, so nobody heard a break — "
+        + "they were told to come back, with a retry hint. Whoever got in got "
+        + "the single-caller experience."
+      : "The refusals came before any audio was sent, so the callers who were "
+        + "turned away heard nothing break — they were told to come back, with "
+        + "a retry hint. " + broke.length + " of the " + served.length
+        + " admitted still broke up, which is the capacity being wrong in the "
+        + "direction it is supposed to be wrong in: it admits what it measured "
+        + "it could finish, and the measurement is a moving average of a box "
+        + "whose load moved. Set it one higher to see the other direction."
+  );
+
+  for (const b of ["speak", "cmp", "load"]) $(b).disabled = false;
+};
+
+/* ====================================================================== boot
+   Every number in the header is polled rather than read once at load. The
+   refusal deadline is recomputed from how long a slot has actually been held,
+   and capacity tracks the measured speed, so both move while the page is
+   open — showing them once would show a number that has since gone stale.
+*/
+let bootDone = false;
+let health = {};
+
+/* ------------------------------------------------------------- chip tooltips
+   The four header numbers are the first thing anyone reads and not one of them
+   explains itself. Each chip carries a sentence, written by paintHealth so it
+   quotes the number currently on screen rather than one frozen at load.
+
+   A single shared node rather than a ::after per chip, because `header` scrolls
+   horizontally and would clip anything drawn below its own bottom edge.
+*/
+let tipFor = null;
+
+function placeTip() {
+  if (!tipFor) return;
+  const t = $("tip"), r = tipFor.getBoundingClientRect(), w = t.offsetWidth;
+  // Centre on the chip, then clamp to the window: these chips sit hard against
+  // the right edge, and a centred tooltip on the last one hangs off the screen.
+  t.style.left = Math.round(Math.min(Math.max(8, r.left + r.width / 2 - w / 2),
+                                     window.innerWidth - w - 8)) + "px";
+  t.style.top = Math.round(r.bottom + 9) + "px";
+}
+
+function showTip(el) {
+  if (!el.dataset.tip) return;
+  tipFor = el;
+  $("tip").textContent = el.dataset.tip;
+  $("tip").classList.add("on");
+  $("tip").setAttribute("aria-hidden", "false");
+  placeTip();
+}
+
+function hideTip() {
+  tipFor = null;
+  $("tip").classList.remove("on");
+  $("tip").setAttribute("aria-hidden", "true");
+}
+
+for (const el of document.querySelectorAll(".chip[tabindex]")) {
+  el.addEventListener("mouseenter", () => showTip(el));
+  el.addEventListener("mouseleave", hideTip);
+  el.addEventListener("focus", () => showTip(el));
+  el.addEventListener("blur", hideTip);
+}
+document.addEventListener("keydown", (e) => e.key === "Escape" && hideTip());
+window.addEventListener("resize", placeTip);
+
+function paintHealth(h) {
+  health = h;
+  const cap = h.max_inflight || 0;
+  const asym = h.fit_slope > 0 ? 1 / h.fit_slope : 0;
+
+  // ---- header ----
+  $("h-cap").textContent = cap || "∞";
+  $("h-thru").textContent = (h.realtime_speed || 0).toFixed(2) + "x";
+  $("h-fit").textContent = h.fit_fixed_s.toFixed(2) + " + " + h.fit_slope.toFixed(2) + "a";
+  $("h-served").textContent = h.admitted + " / " + h.refused;
+  $("serverline").textContent =
+    h.sample_rate / 1000 + " kHz mono · " + h.intra_op_threads + " threads";
+  $("serverline").className = "pill live";
+  $("unpin").style.display = h.capacity_pinned ? "" : "none";
+
+  // ---- planner strip ----
+  $("d-minchunk").textContent = h.min_chunk_s.toFixed(2) + " s";
+  $("d-queue").textContent = h.queue_s.toFixed(2) + " s";
+  $("d-lead").textContent = h.lead_words;
+  $("d-sustain").textContent = h.sustainable
+    ? "buffer grows at this chunk size"
+    : "no chunk size works — the box is over-subscribed";
+  $("d-sustain").className = "tail " + (h.sustainable ? "" : "bad");
+
+  // ---- admission control strips ----
+  $("d-thru").textContent = (h.realtime_speed || 0).toFixed(2) + "x";
+  $("d-cap").textContent = h.derived_capacity;
+  $("d-asym").textContent = "1 / slope says " + asym.toFixed(1)
+    + " — the gap is the fixed cost, paid once per chunk";
+
+  // Where the capacity number comes from, in the order the server computes it.
+  // Every figure quoted here moves with load, text and voice, so the sentence
+  // is rebuilt on every poll rather than written into the markup once.
+  //
+  // The measurement, not the pin: when capacity is pinned these two diverge,
+  // and everything below is describing what the box measured about itself.
+  const meas = h.derived_capacity;
+  const thru = (h.realtime_speed || 0).toFixed(2);
+  const seen = h.fit_samples || 0;
+  $("d-how").textContent =
+    "Every chunk it generates, the server writes down two numbers: how much "
+    + "speech came out, and how long it took to make. It keeps the last "
+    + Math.min(seen, 64) + " of those and divides one total by the other — that "
+    + "is the " + thru + " above. It is measured, not configured, so it drifts "
+    + "with the text, the voice and whatever else the box is doing. "
+    + "One listener consumes exactly one second of speech per second of real "
+    + "time, so a box making " + thru + " seconds of speech per second can "
+    + "carry " + meas + " of them. The remainder is dropped rather than "
+    + "rounded, "
+    + "because the level above the line is not a milder version of the level "
+    + "below it: admit one more and every stream on the box breaks up, not "
+    + "just the extra one."
+    + (seen < 16
+        ? " It has only seen " + seen + " chunks so far, so the capacity is "
+          + "still sitting on its starting value — it waits for 16 chunks "
+          + "before it will move itself."
+        : "");
+  $("d-hold").textContent = h.hold_s.toFixed(1) + " s";
+  $("d-slots").textContent = cap || "∞";
+  $("d-wait").textContent = cap ? h.admission_wait_s.toFixed(1) + " s" : "never";
+  $("d-n").textContent = h.hold_samples
+    ? "from the last " + Math.min(h.hold_samples, 10) + " requests"
+      + (h.hold_samples < 10 ? " (still settling)" : "")
+    : "no traffic yet — starting estimate";
+  $("d-preempt").textContent = h.slot_preempted;
+
+  // The capacity list runs 1 .. measured+1, so every level below the line is
+  // reachable and not just the two the argument needs. It is rebuilt rather
+  // than relabelled because the measurement moves while the page is open, and
+  // a list that stopped at yesterday's ceiling would hide the level that
+  // matters. Rebuilt only when the top actually changes: doing it on every
+  // poll would close the dropdown under anyone who had it open.
+  //
+  // The selection is carried across the rebuild by value. If the measurement
+  // has dropped far enough that the selected level no longer exists, it falls
+  // back to the measured option rather than silently to the first one, because
+  // the first one is 1 and running 8 callers against 1 is a different
+  // experiment from the one that was asked for.
+  //
+  // The measured level sends -1, not its own number: -1 leaves capacity
+  // tracking the measurement, so the default run does not quietly leave the
+  // server pinned behind it. Every other level pins, which is the whole point
+  // of picking one.
+  const limitSel = $("limit");
+  if (limitSel.dataset.top !== String(meas)) {
+    const keep = limitSel.value;
+    limitSel.innerHTML = "";
+    for (let n = 1; n <= meas + 1; n++) {
+      const o = document.createElement("option");
+      o.value = n === meas ? -1 : n;
+      o.textContent = n + (n === meas ? " — what it measured"
+                         : n === meas + 1 ? " — one over the measurement" : "");
+      limitSel.appendChild(o);
+    }
+    const none = document.createElement("option");
+    none.value = 0;
+    none.textContent = "no limit";
+    limitSel.appendChild(none);
+    limitSel.value = [...limitSel.options].some((o) => o.value === keep)
+      ? keep : "-1";
+    limitSel.dataset.top = meas;
+  }
+
+  // Repainted every poll rather than written once. The sentence claims the
+  // number moves, so a frozen number in it would be the page contradicting
+  // itself -- and it does move, between 1 and 3 on this box.
+  $("admission-lede").textContent =
+    "The server admits as many streams as it has measured it can finish — "
+    + meas + " right now, and it moves. Callers beyond that are refused before "
+    + "a single sample is sent, not queued behind the ones already speaking."
+    + (h.capacity_pinned
+        ? " Right now it is pinned at " + (cap || "no limit")
+          + " instead, which is what the capacity control does."
+        : "");
+
+  // ---- what each header chip means, in the numbers currently on screen ----
+  $("chip-cap").dataset.tip =
+    (cap
+      ? "Admission control's limit right now: " + cap + " callers may be generating at "
+        + "once. The next one is refused on arrival rather than queued behind "
+        + "them — before a single sample is sent, and with a retry hint."
+      : "Admission control is off, so every caller is admitted and none is protected. "
+        + "This is the arm where the audio breaks up.")
+    + (h.capacity_pinned
+        ? " It is pinned there by hand at the moment, not measured."
+        : " Nobody typed it: it is the speed chip, rounded down.");
+
+  // Cold start is its own sentence. Until a chunk has completed, these figures
+  // are the seeds the server boots with, and copy that calls them "measured"
+  // is the page vouching for a measurement that has not happened.
+  $("chip-thru").dataset.tip = seen === 0
+    ? "Nothing has been generated yet, so " + thru + " is the value the server "
+      + "starts with rather than anything it has observed. The first completed "
+      + "chunk replaces it. From then on it is seconds of speech produced per "
+      + "second of model time — ×realtime — averaged over the last 64 chunks, "
+      + "and the capacity follows it."
+    : "Over the last " + Math.min(seen, 64) + " chunks the box produced " + thru
+      + " seconds of speech for every second it spent generating. One listener "
+      + "consumes exactly one second of speech per second of real time, so this "
+      + "is the capacity before rounding down — " + thru + " becomes " + meas
+      + ". It drifts with load, text and voice, which is why the server "
+      + "re-reads it rather than trusting a constant.";
+
+  // The gap between the measured speed and 1/slope is the per-chunk fixed
+  // cost, so it only exists once there is a measurement. Its direction is
+  // asserted from the two live values rather than assumed, because on the seed
+  // coefficients they coincide and the sentence would be claiming a gap of zero.
+  const gap = asym - (h.realtime_speed || 0);
+  $("chip-fit").dataset.tip =
+    "Making a seconds of speech costs " + h.fit_fixed_s.toFixed(2) + " + "
+    + h.fit_slope.toFixed(2) + " × a seconds. The " + h.fit_fixed_s.toFixed(2)
+    + " is fixed and paid on every call however short it is; the "
+    + h.fit_slope.toFixed(2) + " is the cost of one more second on top."
+    + (seen === 0
+        ? " These are the coefficients the server boots with. It refits them "
+          + "from its own completed chunks, and waits for 16 before it will let "
+          + "the capacity move."
+        : " Refit continuously from the last " + Math.min(seen, 64) + " chunks."
+          + (gap > 0.05
+              ? " The slope alone says " + asym.toFixed(1) + " streams, but "
+                + "the measured speed is " + thru + "x. That shortfall is the "
+                + "fixed cost, charged once per chunk — and cutting chunks small "
+                + "for a fast first sound is what creates the extra chunks. "
+                + "Capacity follows the measurement."
+              : " Measured speed is " + thru + "x against " + asym.toFixed(1)
+                + " from the slope alone; they are level at the moment, which "
+                + "happens when chunks are long enough that the per-chunk fixed "
+                + "cost barely registers."));
+
+  $("chip-served").dataset.tip =
+    "Since the server started: " + h.admitted + " streams admitted, "
+    + h.refused + " turned away before a sample was sent."
+    // Branching on the count rather than writing one sentence for both: on a
+    // quiet server "the alternative is admitting all 2" describes nothing.
+    + (h.refused
+        ? " A refusal is not a failure — it lands before any audio is sent, so "
+          + "the caller hears nothing break and is told to come back. The "
+          + "alternative is admitting all " + (h.admitted + h.refused)
+          + " and breaking up every one of them."
+        : " Nothing has needed refusing yet. When it does, the refusal arrives "
+          + "before any audio is sent, so that caller hears nothing break and "
+          + "is told to come back — rather than finding out mid-sentence.");
+
+  // If a tooltip is open while the poll lands, rewrite it in place. Leaving it
+  // showing the previous poll's numbers beside a chip that has already moved
+  // would be the page disagreeing with itself.
+  if (tipFor) { $("tip").textContent = tipFor.dataset.tip; placeTip(); }
+
+  if (!bootDone) {
+    bootDone = true;
+    loadTrace.limit = cap;
+    drawStream(); drawLoad();
+  }
+}
+
+function pollHealth() {
+  fetch("/health").then((r) => r.json()).then(paintHealth)
+    .catch(() => {
+      $("serverline").textContent = "server not reachable";
+      $("serverline").className = "pill down";
+    });
+}
+pollHealth();
+setInterval(pollHealth, 1000);
+
+let resizeRaf = null;
+window.addEventListener("resize", () => {
+  if (resizeRaf) return;
+  resizeRaf = requestAnimationFrame(() => {
+    resizeRaf = null; drawStream(); drawLoad();
+  });
+});
+</script>

@@ -1,4 +1,4 @@
-"""M2, step 1 — what happens to the number when more than one person asks.
+"""M2, step 1: what happens to the number when more than one person asks.
 
 Every latency figure in this repo so far was measured with one client and an
 otherwise idle machine. That is the number a demo produces and it is not the
@@ -207,9 +207,9 @@ def control_check(base: list[Result], control: list[Result]) -> bool:
     c = statistics.median([r.total_ms for r in served(control)])
     drift = max(b, c) / min(b, c)
     ok = drift <= 1.15
-    print(f"\n  Control — first level re-run last")
+    print(f"\n  Control, first level re-run last")
     print(f"    at the start  {b:>7.0f} ms      at the end  {c:>7.0f} ms      "
-          f"drift {drift:.2f}x  {'ok' if ok else 'VOID — machine state changed'}")
+          f"drift {drift:.2f}x  {'ok' if ok else 'VOID, machine state changed'}")
     if not ok:
         print("    The baseline and the control disagree, so the ratios below are")
         print("    measuring the machine, not the server. Re-run on a quiet box.")
@@ -249,7 +249,7 @@ def report(levels: dict[int, list[Result]], wall: dict[int, float],
     rtf1 = statistics.median([r.total_ms / 1000 / r.audio_s for r in base])
 
     n_samples = len(levels[min(levels)])
-    print(f"\n  Latency under concurrency — {n_samples} requests per client, "
+    print(f"\n  Latency under concurrency, {n_samples} requests per client, "
           f"paragraph, lead_words=server default\n")
     print(f"  {'clients':>7} {'served':>7} {'TTFB p50':>9} {'p90':>8} {'p95':>8} "
           f"{'max':>8} {'predicted':>10} {'gap':>7}")
@@ -257,7 +257,7 @@ def report(levels: dict[int, list[Result]], wall: dict[int, float],
     for n in sorted(levels):
         rs = served(levels[n])
         if not rs:
-            print(f"  {n:>7} {0:>7}      — everything refused")
+            print(f"  {n:>7} {0:>7}      everything refused")
             continue
         t = [r.ttfb_ms for r in rs]
         predicted = ttfb1 + (n - 1) * chunk_ms
@@ -266,7 +266,7 @@ def report(levels: dict[int, list[Result]], wall: dict[int, float],
               f"{pct(t, 0.95):>5.0f} ms {max(t):>5.0f} ms {predicted:>7.0f} ms "
               f"{p50 / predicted:>6.2f}x")
     print(f"\n  predicted = TTFB(1) {ttfb1:.0f} ms + (N-1) x mean chunk "
-          f"{chunk_ms:.0f} ms — one chunk from each client ahead in the slot.")
+          f"{chunk_ms:.0f} ms, one chunk from each client ahead in the slot.")
     print("  Served requests only. A refusal has no TTFB, and folding a fast")
     print("  'no' into the percentiles would improve the tail as the server")
     print("  turns more people away.")
@@ -280,7 +280,7 @@ def report(levels: dict[int, list[Result]], wall: dict[int, float],
         refused = sum(1 for r in levels[n] if r.refused)
         audio = sum(r.audio_s for r in levels[n])
         if not rs:
-            print(f"  {n:>7} {'—':>10} {'—':>10} {'—':>9} {'—':>9} {'—':>9} "
+            print(f"  {n:>7} {'-':>10} {'-':>10} {'-':>9} {'-':>9} {'-':>9} "
                   f"{refused:>3}/{len(levels[n]):<4} {0.0:>7.2f}x")
             continue
         d = pct([r.admission_wait_ms for r in rs], 0.50)
@@ -292,7 +292,7 @@ def report(levels: dict[int, list[Result]], wall: dict[int, float],
               f"{refused:>3}/{len(levels[n]):<4} {audio / wall[n]:>7.2f}x")
     print("\n  admit is the wait for admission, before anything is sent; queue")
     print("  is the wait for the model slot, after. underrun counts served")
-    print("  requests whose buffer ran dry — the only failure the listener can")
+    print("  requests whose buffer ran dry, the only failure the listener can")
     print("  hear. refused is the number turned away before a sample went out.")
     print("  xrealtime is seconds of audio delivered per second of wall clock.")
 
@@ -303,7 +303,7 @@ def report(levels: dict[int, list[Result]], wall: dict[int, float],
     # worse failure than the queueing this replaced, so it is checked rather
     # than assumed.
     if any(r.refused for rs in levels.values() for r in rs):
-        print(f"\n  Fairness — was the same client served every time?\n")
+        print(f"\n  Fairness: was the same client served every time?\n")
         print(f"  {'clients':>7} {'served per client':>20} {'spread':>9} "
               f"{'starved':>9}")
         print("  " + "-" * 50)
@@ -355,7 +355,7 @@ def report(levels: dict[int, list[Result]], wall: dict[int, float],
     print("\n  Delivered audio flattens at the ceiling no matter how many")
     print("  clients are added; past it every extra client buys queue, not")
     print("  audio. Width moves that ceiling by putting the idle part of the box")
-    print("  to work. Moving it any further takes more audio per forward pass —")
+    print("  to work. Moving it any further takes more audio per forward pass.")
     print("  a batcher, which per finding 7 this graph has no batch dimension")
     print("  to give.")
 
@@ -384,7 +384,7 @@ async def main() -> None:
     # by the control check for that reason -- the baseline came out 1.44x slower
     # than the same level re-run at the end.
     if args.settle:
-        print(f"  settling — {args.settle} discarded requests...", flush=True)
+        print(f"  settling, {args.settle} discarded requests...", flush=True)
         await level(args.url, PARAGRAPH, 1, args.settle, 0)
 
     for n in ns:
@@ -394,7 +394,7 @@ async def main() -> None:
             args.url, PARAGRAPH, n, args.requests, args.warmup)
 
     # The control: the lowest level again, last. See control_check().
-    print(f"  running control — {ns[0]} client x {args.requests} requests...",
+    print(f"  running control, {ns[0]} client x {args.requests} requests...",
           flush=True)
     control, _ = await level(args.url, PARAGRAPH, ns[0], args.requests, args.warmup)
 
@@ -402,7 +402,7 @@ async def main() -> None:
 
     total = sum(len(v) for v in levels.values())
     print(f"\n  {total} requests total. p95 at {min(len(v) for v in levels.values())} "
-          f"samples is the second-worst value, not an estimate — read it as a tail")
+          f"samples is the second-worst value, not an estimate. Read it as a tail")
     print("  indicator. A quotable p99 needs a few hundred requests per level.")
 
 

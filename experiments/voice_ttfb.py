@@ -67,7 +67,7 @@ def spread(rows, i):
 
 
 async def main():
-    pinned = await arm(5, "lead_words pinned at 5 — same words for every voice")
+    pinned = await arm(5, "lead_words pinned at 5, same words for every voice")
     alo, ahi, ax = spread(pinned, 2)
     glo, ghi, gx = spread(pinned, 3)
     tlo, thi, tx = spread(pinned, 4)
@@ -84,7 +84,7 @@ async def main():
     print(f"      spread {min(per_s):.0f} to {max(per_s):.0f} ms"
           f"   {max(per_s) / min(per_s):.2f}x")
 
-    derived = await arm(None, "lead_words left to the server — how real requests arrive")
+    derived = await arm(None, "lead_words left to the server, how real requests arrive")
     tlo, thi, tx = spread(derived, 4)
     print(f"\n    TTFB           {tlo:.0f} ms to {thi:.0f} ms   {tx:.2f}x")
 

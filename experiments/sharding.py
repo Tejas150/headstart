@@ -1,7 +1,7 @@
-"""M1, block 3 — one call at a time leaves the box half idle. How to fill it.
+"""M1, block 3: one call at a time leaves the box half idle. How to fill it.
 
-roofline.py (finding 5) found that the operators which dominate the floor —
-Sin, ConvTranspose, STFT — sit under neither the bandwidth roof nor the
+roofline.py (finding 5) found that the operators which dominate the floor,
+Sin, ConvTranspose and STFT, sit under neither the bandwidth roof nor the
 compute roof. A third of the model's time is the machine waiting. Threading
 one inference harder does not recover it: threads.py found the curve flat
 past 8 and negative past that, which is what "not compute-bound" looks like.
@@ -28,7 +28,7 @@ that, plus the per-stream median so the latency cost is visible rather than
 hidden inside an aggregate.
 
 Why it matters for the server: whichever wins sets MODEL_WIDTH, and on a
-rented CPU box memory is usually the binding constraint, not cores — which
+rented CPU box memory is usually the binding constraint, not cores, which
 is a thumb on the scale that a throughput number alone will not show you.
 
 Run it on an idle machine. Both arms saturate every core by design, so
@@ -141,7 +141,7 @@ def payload(kokoro: Kokoro) -> dict:
     """The model's inputs, built once, so the arm times run() and nothing else.
 
     Phonemization is 0.3 ms (floor.py) so hoisting it does not change the
-    answer — but it does mean every caller sends byte-identical work, which
+    answer, but it does mean every caller sends byte-identical work, which
     removes one way the arms could differ for an uninteresting reason.
     """
     phonemes = " ".join(kokoro.tokenizer.phonemize(TEXT, "en-us").split())
@@ -197,7 +197,7 @@ def report(label, results, extra_model_copies) -> None:
     aggregate = sum(r["audio_s"] for r in results) / max(r["wall_s"]
                                                          for r in results)
     per_stream = [statistics.median(r["calls"]) for r in results]
-    memory = f"+{extra_model_copies * 326} MB" if extra_model_copies else "—"
+    memory = f"+{extra_model_copies * 326} MB" if extra_model_copies else "-"
     print(f"  {label:<44} {aggregate:>5.2f}x  {memory:>8}   "
           f"per stream {', '.join(f'{1000 * p:.0f}' for p in per_stream)} ms")
 
@@ -207,7 +207,7 @@ REPEATS = int(sys.argv[2]) if len(sys.argv) > 2 else 1
 
 print(f"{TEXT[:40]}... x {WINDOW_S:.0f} s per leg, {VOICE}")
 if REPEATS > 1:
-    print(f"{REPEATS} repeats — read the spread, not the best row")
+    print(f"{REPEATS} repeats. Read the spread, not the best row")
 print()
 print(f"  {'layout':<44} {'output':>5}  {'memory':>8}   per-stream latency")
 print(f"  {'-' * 44} {'-' * 5}  {'-' * 8}   {'-' * 24}")

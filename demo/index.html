@@ -1,7 +1,7 @@
 <!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>headstart — console</title>
+<title>headstart console</title>
 <link rel="icon" href="data:,">
 <!--
   An instrument panel for a streaming TTS server.
@@ -268,7 +268,7 @@
       <div class="k">served / refused</div></div>
     <span class="pill" id="serverline">connecting…</span>
     <span class="pill pinned" id="unpin" style="display:none"
-          title="Hand capacity back to the measurement">pinned — unpin</span>
+          title="Hand capacity back to the measurement">pinned &middot; unpin</span>
   </div>
 </header>
 
@@ -418,7 +418,7 @@
 <footer id="wirebar">
   <div class="wirehead" id="wiretoggle">
     <span class="caret" id="wirecaret">▾</span>
-    <span>Wire — every frame the server sent, as it arrived</span>
+    <span>Wire: every frame the server sent, as it arrived</span>
     <span class="hint" id="wirehint">click to collapse</span>
   </div>
   <div class="wire" id="wire"></div>
@@ -891,7 +891,7 @@ $("cmp").onclick = async () => {
         + "of the clip."
       : "The opening sentence is " + words + " words. Without the split the "
         + "listener waits for all of it; with it they wait for " + used + ". "
-        + "That is paid for out of buffer depth, not out of speed — "
+        + "That is paid for out of buffer depth, not out of speed: "
         + "starting sooner leaves less finished audio in hand when the box "
         + "gets busy.";
   }
@@ -1013,7 +1013,7 @@ $("load").onclick = async () => {
   const refused = done.length - served.length;
   const deadMs = Math.round(served.reduce((a, c) => a + c.player.silenceS, 0) * 1000);
   const head = "<b>" + served.length + " served, " + refused + " refused, "
-             + broke.length + " broke up" + (deadMs ? " — " + deadMs
+             + broke.length + " broke up" + (deadMs ? ", " + deadMs
              + " ms of silence in total" : "") + ".</b> ";
 
   // Four verdicts, because the setting is making a different argument
@@ -1028,22 +1028,22 @@ $("load").onclick = async () => {
         + "people standing in it than being turned away would have been."
     : limit > measured
       ? "This is capacity set " + (limit - measured) + " above what the box "
-        + "measured for itself. The extra stream does not get worse audio — it "
+        + "measured for itself. The extra stream does not get worse audio. It "
         + "breaks up every stream on the box, including the ones that were "
         + "already speaking. That is why the measured number is rounded down."
     : limit < measured
       ? "This is capacity held " + (measured - limit) + " below the "
         + "measurement, so the box was never asked for everything it had. "
         + refused + " callers were turned away that the server believes it "
-        + "could have finished — which is what buying margin costs, and it is "
+        + "could have finished, which is what buying margin costs, and it is "
         + "paid in refusals rather than in broken audio. Run it at " + measured
         + " to see where the line actually is."
     : broke.length === 0
-      ? "The refusals came before any audio was sent, so nobody heard a break — "
+      ? "The refusals came before any audio was sent, so nobody heard a break. "
         + "they were told to come back, with a retry hint. Whoever got in got "
         + "the single-caller experience."
       : "The refusals came before any audio was sent, so the callers who were "
-        + "turned away heard nothing break — they were told to come back, with "
+        + "turned away heard nothing break. They were told to come back, with "
         + "a retry hint. " + broke.length + " of the " + served.length
         + " admitted still broke up, which is the capacity being wrong in the "
         + "direction it is supposed to be wrong in: it admits what it measured "
@@ -1058,7 +1058,7 @@ $("load").onclick = async () => {
    Every number in the header is polled rather than read once at load. The
    refusal deadline is recomputed from how long a slot has actually been held,
    and capacity tracks the measured speed, so both move while the page is
-   open — showing them once would show a number that has since gone stale.
+   open, and showing them once would show a number that has since gone stale.
 */
 let bootDone = false;
 let health = {};
@@ -1128,14 +1128,14 @@ function paintHealth(h) {
   $("d-lead").textContent = h.lead_words;
   $("d-sustain").textContent = h.sustainable
     ? "buffer grows at this chunk size"
-    : "no chunk size works — the box is over-subscribed";
+    : "no chunk size works, the box is over-subscribed";
   $("d-sustain").className = "tail " + (h.sustainable ? "" : "bad");
 
   // ---- admission control strips ----
   $("d-thru").textContent = (h.realtime_speed || 0).toFixed(2) + "x";
   $("d-cap").textContent = h.derived_capacity;
   $("d-asym").textContent = "1 / slope says " + asym.toFixed(1)
-    + " — the gap is the fixed cost, paid once per chunk";
+    + ", and the gap is the fixed cost, paid once per chunk";
 
   // Where the capacity number comes from, in the order the server computes it.
   // Every figure quoted here moves with load, text and voice, so the sentence
@@ -1149,7 +1149,7 @@ function paintHealth(h) {
   $("d-how").textContent =
     "Every chunk it generates, the server writes down two numbers: how much "
     + "speech came out, and how long it took to make. It keeps the last "
-    + Math.min(seen, 64) + " of those and divides one total by the other — that "
+    + Math.min(seen, 64) + " of those and divides one total by the other, which "
     + "is the " + thru + " above. It is measured, not configured, so it drifts "
     + "with the text, the voice and whatever else the box is doing. "
     + "One listener consumes exactly one second of speech per second of real "
@@ -1161,7 +1161,7 @@ function paintHealth(h) {
     + "just the extra one."
     + (seen < 16
         ? " It has only seen " + seen + " chunks so far, so the capacity is "
-          + "still sitting on its starting value — it waits for 16 chunks "
+          + "still sitting on its starting value. It waits for 16 chunks "
           + "before it will move itself."
         : "");
   $("d-hold").textContent = h.hold_s.toFixed(1) + " s";
@@ -1170,7 +1170,7 @@ function paintHealth(h) {
   $("d-n").textContent = h.hold_samples
     ? "from the last " + Math.min(h.hold_samples, 10) + " requests"
       + (h.hold_samples < 10 ? " (still settling)" : "")
-    : "no traffic yet — starting estimate";
+    : "no traffic yet, starting estimate";
   $("d-preempt").textContent = h.slot_preempted;
 
   // The capacity list runs 1 .. measured+1, so every level below the line is
@@ -1197,8 +1197,8 @@ function paintHealth(h) {
     for (let n = 1; n <= meas + 1; n++) {
       const o = document.createElement("option");
       o.value = n === meas ? -1 : n;
-      o.textContent = n + (n === meas ? " — what it measured"
-                         : n === meas + 1 ? " — one over the measurement" : "");
+      o.textContent = n + (n === meas ? ", what it measured"
+                         : n === meas + 1 ? ", one over the measurement" : "");
       limitSel.appendChild(o);
     }
     const none = document.createElement("option");
@@ -1214,7 +1214,7 @@ function paintHealth(h) {
   // number moves, so a frozen number in it would be the page contradicting
   // itself -- and it does move, between 1 and 3 on this box.
   $("admission-lede").textContent =
-    "The server admits as many streams as it has measured it can finish — "
+    "The server admits as many streams as it has measured it can finish: "
     + meas + " right now, and it moves. Callers beyond that are refused before "
     + "a single sample is sent, not queued behind the ones already speaking."
     + (h.capacity_pinned
@@ -1227,7 +1227,7 @@ function paintHealth(h) {
     (cap
       ? "Admission control's limit right now: " + cap + " callers may be generating at "
         + "once. The next one is refused on arrival rather than queued behind "
-        + "them — before a single sample is sent, and with a retry hint."
+        + "them, before a single sample is sent, and with a retry hint."
       : "Admission control is off, so every caller is admitted and none is protected. "
         + "This is the arm where the audio breaks up.")
     + (h.capacity_pinned
@@ -1241,12 +1241,12 @@ function paintHealth(h) {
     ? "Nothing has been generated yet, so " + thru + " is the value the server "
       + "starts with rather than anything it has observed. The first completed "
       + "chunk replaces it. From then on it is seconds of speech produced per "
-      + "second of model time — ×realtime — averaged over the last 64 chunks, "
+      + "second of model time, x realtime, averaged over the last 64 chunks, "
       + "and the capacity follows it."
     : "Over the last " + Math.min(seen, 64) + " chunks the box produced " + thru
       + " seconds of speech for every second it spent generating. One listener "
       + "consumes exactly one second of speech per second of real time, so this "
-      + "is the capacity before rounding down — " + thru + " becomes " + meas
+      + "is the capacity before rounding down: " + thru + " becomes " + meas
       + ". It drifts with load, text and voice, which is why the server "
       + "re-reads it rather than trusting a constant.";
 
@@ -1268,7 +1268,7 @@ function paintHealth(h) {
           + (gap > 0.05
               ? " The slope alone says " + asym.toFixed(1) + " streams, but "
                 + "the measured speed is " + thru + "x. That shortfall is the "
-                + "fixed cost, charged once per chunk — and cutting chunks small "
+                + "fixed cost, charged once per chunk, and cutting chunks small "
                 + "for a fast first sound is what creates the extra chunks. "
                 + "Capacity follows the measurement."
               : " Measured speed is " + thru + "x against " + asym.toFixed(1)
@@ -1282,13 +1282,13 @@ function paintHealth(h) {
     // Branching on the count rather than writing one sentence for both: on a
     // quiet server "the alternative is admitting all 2" describes nothing.
     + (h.refused
-        ? " A refusal is not a failure — it lands before any audio is sent, so "
+        ? " A refusal is not a failure. It lands before any audio is sent, so "
           + "the caller hears nothing break and is told to come back. The "
           + "alternative is admitting all " + (h.admitted + h.refused)
           + " and breaking up every one of them."
         : " Nothing has needed refusing yet. When it does, the refusal arrives "
           + "before any audio is sent, so that caller hears nothing break and "
-          + "is told to come back — rather than finding out mid-sentence.");
+          + "is told to come back, rather than finding out mid-sentence.");
 
   // If a tooltip is open while the poll lands, rewrite it in place. Leaving it
   // showing the previous poll's numbers beside a chip that has already moved

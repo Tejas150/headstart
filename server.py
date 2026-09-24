@@ -1,4 +1,4 @@
-"""M1, block 3 — the server. Audio leaves the process before it is all made.
+"""M1, block 3: the server. Audio leaves the process before it is all made.
 
 Blocks 1 and 2 were measurement. This is the first thing in the repo a
 reviewer can actually run, and the first time the project's name is literally

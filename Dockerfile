@@ -1,4 +1,4 @@
-# headstart — one `docker run` to a server that answers on /health.
+# headstart: one `docker run` to a server that answers on /health.
 #
 # The point of this file is reproducibility, not deployment. Every latency
 # number in the README is a property of a specific runtime build as much as of

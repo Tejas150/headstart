@@ -1,4 +1,4 @@
-"""M1, block 3 — the client. Plays audio while the rest is still being made.
+"""M1, block 3: the client. Plays audio while the rest is still being made.
 
 This is the demo. Everything before it was a table of numbers; this is the
 part where the claim becomes audible, and the part a reviewer runs first.
@@ -58,7 +58,7 @@ def player(sample_rate: int) -> subprocess.Popen | None:
             stdin=subprocess.PIPE,
         )
     except FileNotFoundError:
-        print("  (aplay not found — measuring only, no playback)")
+        print("  (aplay not found, measuring only, no playback)")
         return None
 
 
@@ -152,7 +152,7 @@ async def main() -> None:
         for lead in (0, None):
             await run(args.url, text, lead, not args.no_play, None)
         print("\n  Same audio, same model, same machine. The only difference is "
-              "where\n  the first cut is made — which is the entire chunking policy.")
+              "where\n  the first cut is made, which is the entire chunking policy.")
     else:
         await run(args.url, text, args.lead_words, not args.no_play, args.out)
 

@@ -1,4 +1,4 @@
-"""M1, block 2b — what is the 346 ms fixed cost actually made of?
+"""M1, block 2b: what is the 346 ms fixed cost actually made of?
 
 floor.py found ~346 ms per call that does not scale with how much audio is
 requested, and showed phonemization is 0.3 ms of it. The rest is inside the
@@ -7,12 +7,12 @@ ONNX session. This asks the runtime directly, via its kernel trace
 
 Two passes, because one is not enough to answer the question.
 
-PASS 1 — where does the time go, and is it even math?
+PASS 1: where does the time go, and is it even math?
     Sum every kernel and compare against the run as a whole. The gap is
     framework overhead: dispatch, allocation, synchronisation. If overhead
     dominates, faster math cannot help and the fix is a different shape.
 
-PASS 2 — which of those operators are the FIXED part?
+PASS 2: which of those operators are the FIXED part?
     An operator whose cost is proportional to audio length is not what
     floor.py measured; it is the slope. Profiling a short and a long clip
     and fitting each operator across the two separates them:
@@ -92,7 +92,7 @@ def profile(text: str) -> tuple[dict[str, float], float, float, float, int]:
 short_ops, short_wall, short_kernel, short_audio, short_launches = profile(SHORT)
 full_ops, full_wall, full_kernel, full_audio, full_launches = profile(FULL)
 
-print("PASS 1 — is the time math, or is it overhead?\n")
+print("PASS 1: is the time math, or is it overhead?\n")
 print(f"  {'':<18}{'short':>12}{'full':>12}")
 print(f"  {'audio':<18}{short_audio:>11.2f}s{full_audio:>11.2f}s")
 print(f"  {'wall / run':<18}{short_wall:>10.1f} ms{full_wall:>10.1f} ms")
@@ -104,7 +104,7 @@ print(f"  {'  as % of wall':<18}"
       f"{(full_wall - full_kernel) / full_wall * 100:>11.0f}%")
 print(f"  {'kernel launches':<18}{short_launches:>12}{full_launches:>12}")
 
-print("\n\nPASS 2 — fixed vs scaling, per operator"
+print("\n\nPASS 2: fixed vs scaling, per operator"
       f"  (fit across {short_audio:.2f}s and {full_audio:.2f}s)\n")
 print(f"  {'operator':<16}{'short':>9}{'full':>9}{'FIXED':>10}{'per audio-s':>13}"
       f"{'verdict':>12}")

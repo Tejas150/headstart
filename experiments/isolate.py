@@ -1,4 +1,4 @@
-"""M1, block 2a — which knob actually bought the 1.34x?
+"""M1, block 2a: which knob actually bought the 1.34x?
 
 threads.py compared a default session against sessions that set
 intra_op_num_threads AND inter_op_num_threads=1 together. That is two
@@ -12,7 +12,7 @@ Four configurations, one variable at a time:
   inter only     inter_op_num_threads = 1
   both           what threads.py actually measured
 
-intra_op splits ONE operation across cores — a single matrix multiply
+intra_op splits ONE operation across cores: a single matrix multiply
 divided into pieces. inter_op runs INDEPENDENT operations concurrently.
 They are different kinds of parallelism and there is no reason to assume
 the win came from the one we assumed.
@@ -76,7 +76,7 @@ for label, intra, inter in CONFIGS:
     results[label] = (short_ms, full_ms)
 
     if label == "default":
-        note = "—"
+        note = "-"
     else:
         base_s, base_f = results["default"]
         note = f"{base_s / short_ms:.2f}x short, {base_f / full_ms:.2f}x full"

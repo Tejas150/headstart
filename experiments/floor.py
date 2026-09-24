@@ -1,4 +1,4 @@
-"""M1, block 2 — how low can time-to-first-sound actually go?
+"""M1, block 2: how low can time-to-first-sound actually go?
 
 Block 1 established that chunking is what buys latency: cut the text sooner
 and the listener hears sound sooner. The obvious next question is how far
@@ -7,7 +7,7 @@ that goes. If a smaller first chunk is always faster, is the floor zero?
 It is not. Every synthesis call pays two costs:
 
   fixed     phonemization, tokenization, style lookup, ONNX session
-            dispatch — paid once per call regardless of length
+            dispatch, paid once per call regardless of length
   variable  the forward pass itself, proportional to audio produced
 
 Chunking smaller shrinks the variable part and leaves the fixed part alone,
@@ -60,7 +60,7 @@ def main() -> None:
     print(f"cold start {(time.perf_counter() - t0) * 1000:.0f} ms  "
           f"(paid once per process, excluded from everything below)\n")
 
-    # The first inference of a process is slower — ONNX Runtime allocates its
+    # The first inference of a process is slower, because ONNX Runtime allocates its
     # arenas and the OS faults the weights in. Burn one so it does not
     # contaminate the shortest prefix.
     kokoro.create("Warm up.", voice=VOICE, speed=1.0, lang="en-us")

@@ -1,4 +1,4 @@
-"""M1, block 2d — is the floor the hardware, or is it the runtime?
+"""M1, block 2d: is the floor the hardware, or is it the runtime?
 
 Everything so far says WHERE the time goes. Nothing so far says WHY it takes
 that long, and without that there is no scaling formula. "How fast a machine
@@ -15,7 +15,7 @@ If it is under neither, the ceiling is software.
 FOUR MEASUREMENTS
 
   1. Machine peaks. Threaded STREAM-triad for bandwidth, large SGEMM for
-     FLOPS. Measured on this box, not read off a spec sheet — spec sheets
+     FLOPS. Measured on this box, not read off a spec sheet, because spec sheets
      quote theoretical numbers no real code reaches.
 
   2. Per-operator arithmetic intensity, from the profiler's tensor shapes.
@@ -80,7 +80,7 @@ def peak_bandwidth(threads: int = CORES) -> float:
 
     A STREAM triad in numpy needs two ufunc calls (multiply, then add),
     which is five passes over memory, not the three the classic formula
-    counts. Counting three understates bandwidth by 1.67x — and since the
+    counts. Counting three understates bandwidth by 1.67x, and since the
     whole scaling argument divides by this number, that error would
     propagate straight into the hardware recommendation. A copy is two
     unambiguous passes: one read, one write.
@@ -109,7 +109,7 @@ def peak_gflops() -> float:
 
     numpy's bundled BLAS is not necessarily a good one, and if it is slower
     than onnxruntime's own GEMM then using it as 'peak' makes the model look
-    like it exceeds the machine's capability — which is nonsense and a sign
+    like it exceeds the machine's capability, which is nonsense and a sign
     the baseline is wrong, not the measurement. So take the best of numpy's
     SGEMM and onnxruntime's own MatMul kernel on the same problem.
     """
@@ -150,7 +150,7 @@ def peak_gflops() -> float:
     ort_gf = (2 * n ** 3) / best / 1e9
 
     print(f"   (numpy BLAS {numpy_gf:.0f} GFLOP/s, onnxruntime GEMM "
-          f"{ort_gf:.0f} GFLOP/s — taking the higher as peak)")
+          f"{ort_gf:.0f} GFLOP/s, taking the higher as peak)")
     return max(numpy_gf, ort_gf)
 
 

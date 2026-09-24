@@ -1,4 +1,4 @@
-"""M1, block 1 — how long until the listener hears something?
+"""M1, block 1: how long until the listener hears something?
 
 Three ways of producing the exact same audio, measured against one number:
 time to first sound.

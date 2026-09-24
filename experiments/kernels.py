@@ -1,6 +1,6 @@
-"""M1, block 2e — the three operators the roofline could not model.
+"""M1, block 2e: the three operators the roofline could not model.
 
-roofline.py labelled STFT, ConvTranspose and LSTM "NEITHER" — far from the
+roofline.py labelled STFT, ConvTranspose and LSTM "NEITHER", far from the
 compute roof and far from the bandwidth roof. But that verdict came from an
 analytic FLOP model that returns zero for all three, because it does not know
 how to count an FFT, a transposed convolution, or a recurrent cell. "Zero
@@ -11,7 +11,7 @@ scaling formula that claims faster hardware will not help. If the verdict is
 wrong, the formula is wrong, and the cloud instance gets chosen on a bad
 number. So they get measured, not modelled.
 
-METHOD — the one that already worked
+METHOD, the one that already worked
     For Sin, the argument that settled it was not a roofline. It was running
     numpy on the identical buffer and finding that one numpy thread beat
     onnxruntime's eight. That is unarguable: same machine, same data, same
@@ -19,7 +19,7 @@ METHOD — the one that already worked
 
     So: take each operator's real tensor shapes and real duration straight
     out of the profile of the real run, reimplement exactly that computation
-    in numpy, and time it. No ONNX graph surgery — the trace already says
+    in numpy, and time it. No ONNX graph surgery, since the trace already says
     what onnxruntime took, and rebuilding single-op models introduces its own
     artefacts.
 
@@ -173,7 +173,7 @@ if by_op["ConvTranspose"]:
         print(f"       in {x_shape} w {w_shape} x{n}: "
               f"ORT {o_ms:>7.2f} ms   numpy {n_ms:>7.2f} ms")
     for shp, n, o_ms in unmodelled:
-        print(f"       x{n}: ORT {o_ms:>7.2f} ms   numpy    —    "
+        print(f"       x{n}: ORT {o_ms:>7.2f} ms   numpy    -    "
               f"(weights folded, shape not in trace)")
     modelled_ort = sum(d[3] for d in detail)
     print(f"       comparable ..... ORT {modelled_ort:>7.2f} ms   "
@@ -221,7 +221,7 @@ print("=" * 62)
 print(f"{'operator':<16}{'ORT ms':>10}{'numpy ms':>11}{'recoverable':>14}")
 for name, o_ms, n_ms in rows:
     if n_ms is None:
-        print(f"{name:<16}{o_ms:>10.1f}{'—':>11}{'not a target':>14}")
+        print(f"{name:<16}{o_ms:>10.1f}{'-':>11}{'not a target':>14}")
     else:
         print(f"{name:<16}{o_ms:>10.1f}{n_ms:>11.1f}{o_ms - n_ms:>13.1f}")
 print("=" * 62)

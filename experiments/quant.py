@@ -1,4 +1,4 @@
-"""M1, block 2c — does int8 actually buy anything, and does it still sound right?
+"""M1, block 2c: does int8 actually buy anything, and does it still sound right?
 
 profile_ops.py predicted ~1.27x from the matmul-family share of the floor.
 That prediction assumed the whole family is quantizable. It is not:
@@ -92,12 +92,12 @@ print(f"  compute ops int8 can touch ..... {sorted(quantizable)}")
 print(f"  their share of the floor ....... {reachable:.0f} of {FLOOR_TOTAL:.0f} ms"
       f"  ({reachable / FLOOR_TOTAL * 100:.0f}%)")
 print(f"  compute ops it cannot .......... {unreachable:.0f} ms"
-      f"  (ConvTranspose, Gemm — not in the registry)")
+      f"  (ConvTranspose, Gemm: not in the registry)")
 print(f"  -> ceiling if that math were free: "
       f"{1 / (1 - reachable / FLOOR_TOTAL):.2f}x")
 print(f"  -> realistic (~2x on that math):  "
       f"{1 / (1 - reachable / FLOOR_TOTAL / 2):.2f}x")
-print("\n  Note: the 4800H is Zen 2 — no VNNI int8 acceleration. Expect the")
+print("\n  Note: the 4800H is Zen 2, with no VNNI int8 acceleration. Expect the")
 print("  memory-bandwidth win, not the instruction win. This may undershoot.\n")
 
 # ---------------------------------------------------------------- quantize
@@ -106,7 +106,7 @@ print("  memory-bandwidth win, not the instruction win. This may undershoot.\n")
 #
 #   NOT_IMPLEMENTED : Could not find an implementation for ConvInteger(10)
 #
-# Every Conv in this graph has rank-3 weights — they are 1-D convolutions
+# Every Conv in this graph has rank-3 weights, so they are 1-D convolutions
 # (88 Conv, 6 ConvTranspose, all rank 3). ORT's ConvInteger CPU kernel is
 # 2-D only. So the op holding 86 of the 93 reachable ms cannot be quantized
 # on this runtime at all. What is left is MatMul and LSTM: 7 ms of a 299 ms
@@ -158,7 +158,7 @@ for label in ("fp32", "int8"):
     print(f"  {label:<10}{fixed:>7.0f} ms{slope:>11.0f} ms")
 
 # ---------------------------------------------------------------- quality
-print("\n\nQUALITY — does it still sound like speech?\n")
+print("\n\nQUALITY: does it still sound like speech?\n")
 for name, idx in (("short", 0), ("full", 1)):
     a = audio["fp32"][idx].astype(np.float64)
     b = audio["int8"][idx].astype(np.float64)
@@ -186,7 +186,7 @@ try:
     import soundfile as sf
     for label in ("fp32", "int8"):
         sf.write(f"out_{label}.wav", audio[label][1], SR)
-    print("\n  wrote out_fp32.wav and out_int8.wav — listen to both.")
+    print("\n  wrote out_fp32.wav and out_int8.wav. Listen to both.")
 except ImportError:
     print("\n  (soundfile not installed; skipped writing wavs)")
 

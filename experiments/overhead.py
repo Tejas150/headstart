@@ -1,4 +1,4 @@
-"""M1, block 3 — does serving the model cost anything beyond running it?
+"""M1, block 3: does serving the model cost anything beyond running it?
 
 client.py reports ~1690 ms to generate the M0 sentence. threads.py, tuned
 identically, measured ~1540 ms for the same text on the same machine. 10% is

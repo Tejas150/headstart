@@ -1,4 +1,4 @@
-# headstart — pinned to what the README's numbers were measured on.
+# headstart: pinned to what the README's numbers were measured on.
 #
 # Versions are exact, not floors. Every latency figure in the README is a
 # property of a specific runtime build as much as of this machine: onnxruntime
@@ -9,11 +9,11 @@
 #     python -m venv .venv && .venv/bin/pip install -r requirements.txt
 #
 # Python 3.10 on Ubuntu. Note: python3.10-venv may not be installed and sudo
-# may not be available — `pip3 install --user virtualenv` then
+# may not be available. Use `pip3 install --user virtualenv` then
 # `virtualenv .venv` is the fallback that works.
 #
 # Not installable via pip, needed by client.py for playback:
-#     aplay  (alsa-utils)  — usually already present on Linux
+#     aplay  (alsa-utils)  usually already present on Linux
 
 # --- model runtime -----------------------------------------------------
 kokoro-onnx==0.6.1

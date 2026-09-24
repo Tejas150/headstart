@@ -1,4 +1,4 @@
-"""M1 — the headline number, measured three ways under one methodology.
+"""M1: the headline number, measured three ways under one methodology.
 
 WHY THIS SCRIPT EXISTS
     The README's first table is the claim the whole repo rests on: streaming
@@ -125,7 +125,7 @@ async def main() -> None:
     print("  Baseline runs in-process; the two streamed rows go over the WebSocket.\n")
 
     bt, b_audio = baseline_runs()
-    rows = [row("baseline — no streaming", bt, bt, b_audio,
+    rows = [row("baseline, no streaming", bt, bt, b_audio,
                 "one create(), nothing emitted until done")]
 
     for lead, label, note in (
@@ -152,8 +152,8 @@ async def main() -> None:
     # shorter clip rather than a faster one. Kokoro's output length varies a
     # little with where the cuts fall, so this is a tolerance, not equality.
     spread = max(r["audio_s"] for r in rows) - min(r["audio_s"] for r in rows)
-    verdict = "same clip" if spread < 0.5 else "MISMATCH — rows are not comparable"
-    print(f"  Audio length across rows: {spread:.2f}s spread — {verdict}")
+    verdict = "same clip" if spread < 0.5 else "MISMATCH, rows are not comparable"
+    print(f"  Audio length across rows: {spread:.2f}s spread, {verdict}")
 
 
 asyncio.run(main())

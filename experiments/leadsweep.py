@@ -1,4 +1,4 @@
-"""M1, block 3 — how small should the first chunk be?
+"""M1, block 3: how small should the first chunk be?
 
 --lead-words 6 took the paragraph from ~1600 ms to ~1000 ms. 6 was a guess. The
 floor is ~300 ms, so 1000 leaves room, and the obvious move is to cut smaller.
@@ -11,7 +11,7 @@ But smaller is not free, and it fails in two different directions:
 
   THE BUFFER CAN RUN DRY.  This is the one that actually breaks the product.
       `lead` is seconds of audio handed over minus seconds already played. A
-      tiny first chunk buys ~0.5 s of audio for ~500 ms of work — playback
+      tiny first chunk buys ~0.5 s of audio for ~500 ms of work, so playback
       starts almost immediately and then has to be fed faster than the model
       can generate. If lead ever goes negative the listener hears a gap, and a
       gap is worse than having waited longer in the first place.

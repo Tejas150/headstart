@@ -1,11 +1,11 @@
-"""M1, block 2b — the fixed cost is inside the session, so tune the session.
+"""M1, block 2b: the fixed cost is inside the session, so tune the session.
 
 floor.py showed time-to-first-sound bottoms out around a 346 ms fixed cost
 per call, and that phonemization accounts for 0.3 ms of it. The rest is
 inside ONNX Runtime. Before rewriting anything, try the knob that costs
 nothing to turn: how many threads the runtime uses for one inference.
 
-The default is one thread per logical core — 16 here. That is tuned for
+The default is one thread per logical core, 16 here. That is tuned for
 throughput on a big graph. A small graph can lose to it, because every
 parallel section costs a fork and a join, and if the work inside is smaller
 than the synchronisation around it, more threads make it slower.

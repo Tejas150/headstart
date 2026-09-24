@@ -1,4 +1,4 @@
-"""M1 — how fine can chunking go, and why does it stop there?
+"""M1: how fine can chunking go, and why does it stop there?
 
 The obvious extrapolation from the lead sweep: if a 5-word first chunk beats a
 whole sentence, stream word by word and get TTFB down to the floor. The
@@ -77,7 +77,7 @@ def gen(k: Kokoro, text: str) -> tuple[float, np.ndarray]:
 
 def sweep(k: Kokoro) -> None:
     words = PARAGRAPH.split()
-    print(f"\n  Chunk-size sweep — {len(words)} words\n")
+    print(f"\n  Chunk-size sweep, {len(words)} words\n")
     print(f"  {'words/chunk':>11} {'chunks':>7} {'gen/chunk':>10} {'audio/chunk':>12} "
           f"{'RTF':>6} {'total gen':>10} {'total audio':>12}")
     print("  " + "-" * 76)
@@ -101,7 +101,7 @@ def citation_form(k: Kokoro) -> None:
     print(f"\n  Same sentence, two ways\n")
     print(f"    one call            {w_s:>6.2f}s")
     print(f"    one call per word   {p_s:>6.2f}s   ({p_s / w_s:.2f}x longer)")
-    print("\n  Where the extra time goes — each word carries its own silence:")
+    print("\n  Where the extra time goes: each word carries its own silence:")
     for w in SENTENCE.split()[:5]:
         s = gen(k, w)[1]
         a = np.abs(s)
@@ -137,7 +137,7 @@ def graph_signature() -> None:
     stateful = [n for n in names if any(t in n for t in ("state", "cache", "hidden", "h0", "c0"))]
     print(f"\n    state tensors in the signature: {stateful or 'none'}")
     print(f"    nodes {len(g.node)}, distinct ops {len(ops)}")
-    print("\n  Whole-sequence operators — these cannot begin before the input ends:")
+    print("\n  Whole-sequence operators, which cannot begin before the input ends:")
     for op in ("STFT", "LSTM", "ConvTranspose", "ReduceMean", "Resize"):
         if op in ops:
             print(f"    {op:<16} {ops[op]}")

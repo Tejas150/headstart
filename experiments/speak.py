@@ -1,4 +1,4 @@
-"""M0 — prove the model loads and speaks, and time both halves.
+"""M0: prove the model loads and speaks, and time both halves.
 
 Cold start (loading 311 MB of weights off disk) and synthesis are
 separate costs. They get separate numbers from day one, because
